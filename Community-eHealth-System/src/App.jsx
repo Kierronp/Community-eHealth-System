@@ -209,8 +209,11 @@ function App() {
   const [databaseMessage, setDatabaseMessage] = useState(supabaseConfigurationError)
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(supabaseConfigured)
-  const [, setAuthError] = useState('')
-  const [authMode, setAuthMode] = useState(() => new URLSearchParams(window.location.search).get('portal') === 'client' ? 'client' : 'staff')
+  const [authError, setAuthError] = useState('')
+  const [authMode, setAuthMode] = useState(() => {
+    const portal = new URLSearchParams(window.location.search).get('portal')
+    return portal === 'client' || portal === 'staff' ? portal : 'public'
+  })
   const [accountType, setAccountType] = useState('unknown')
   const [clientProfile, setClientProfile] = useState(null)
   const [organizations, setOrganizations] = useState([])
@@ -304,7 +307,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!supabaseConfigured || !supabase || authLoading || !session) return undefined
+    if (!supabaseConfigured || !supabase || authLoading || !session || authMode === 'public') return undefined
     let cancelled = false
     async function identifyAccount() {
       const { data, error } = await supabase.rpc('my_organizations')
@@ -531,7 +534,7 @@ function App() {
     setAuthMode('staff')
     setAccountType('unknown')
     setAuthError('')
-    window.history.replaceState({}, '', window.location.pathname)
+    window.history.replaceState({}, '', `${window.location.pathname}?portal=staff`)
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
   }
@@ -564,15 +567,19 @@ function App() {
     if (!supabase) return
     try {
       const { error } = await supabase.auth.signOut()
-      if (error) setAuthError(`Could not sign out: ${error.message}`)
+      if (error) {
+        setAuthError(`Could not sign out: ${error.message}`)
+        setToast(`Could not sign out: ${error.message}`)
+      }
       else {
         setAccountType('unknown')
         setClientProfile(null)
-        setAuthMode('staff')
+        setAuthMode('public')
         window.history.replaceState({}, '', window.location.pathname)
       }
     } catch (error) {
       setAuthError(`Could not sign out: ${error instanceof Error ? error.message : 'Unknown authentication error.'}`)
+      setToast(`Could not sign out: ${error instanceof Error ? error.message : 'Unknown authentication error.'}`)
     }
   }
 
@@ -582,6 +589,9 @@ function App() {
 
   if (authLoading) {
     return <AuthFrame><p>Restoring your secure session…</p></AuthFrame>
+  }
+  if (session && authMode === 'public') {
+    return <ClientPortal onStaffLogin={signIn} onClientAuthStart={beginClientSignIn} />
   }
   if (!session) {
     return <ClientPortal onStaffLogin={signIn} onClientAuthStart={beginClientSignIn} initialAuthError={authError} />
@@ -671,6 +681,7 @@ function App() {
             </div>
             <span className="topbar-divider" />
             {supabaseConfigured && organizations.length > 1 && <select className="organization-switcher" aria-label="Select organization" value={organizationId} onChange={(event) => { setDatabaseStatus('connecting'); setWorkspaceData({}); setCommunities([]); setFacilities([]); setRecordModal(false); setPatientModal(false); setEditingRecord(null); setPatientEditingRecord(null); setOrganizationId(event.target.value) }}>{organizations.map((organization) => <option key={organization.organization_id} value={organization.organization_id}>{organization.organization_name}</option>)}</select>}
+            <button className="secondary-button client-portal-switch" type="button" onClick={signOut}>Client portal</button>
             {supabaseConfigured ? <button className="sign-out-button" type="button" onClick={signOut}>Sign out</button> : <Avatar initials="EW" color="mint" small />}
           </div>
         </header>

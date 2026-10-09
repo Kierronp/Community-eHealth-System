@@ -17,8 +17,19 @@ function CampaignList({ campaigns, loading, error }) {
   </div>
 }
 
+function ClientQueue({ entries, loading, error }) {
+  if (loading) return <p className="portal-muted">Loading your requests…</p>
+  if (error) return <p className="auth-error" role="alert">{error}</p>
+  if (!entries.length) return <p className="portal-muted">No clinic requests yet. Clinic staff will add your queue information here when you check in for a service.</p>
+  return <div className="portal-queue-list">{entries.map((entry) => <article className="portal-queue-card" key={entry.id}>
+    <div><span className="eyebrow">{entry.campaign?.title ?? 'Clinic service'}</span><strong>Queue #{entry.queue_number}</strong><small>{entry.campaign?.starts_at ? new Date(entry.campaign.starts_at).toLocaleString() : ''}</small></div>
+    <span className={`portal-status portal-status-${entry.status}`}>{entry.status}</span>
+  </article>)}</div>
+}
+
 export default function ClientPortal({ mode = 'public', profile, onProfileCreated, onNotificationChange, onStaffLogin, onClientAuthStart, onSignOut, initialAuthError = '' }) {
   const [section, setSection] = useState('home')
+  const [clientTab, setClientTab] = useState('dashboard')
   const [campaigns, setCampaigns] = useState([])
   const [campaignLoading, setCampaignLoading] = useState(supabaseConfigured)
   const [campaignError, setCampaignError] = useState('')
@@ -178,6 +189,13 @@ export default function ClientPortal({ mode = 'public', profile, onProfileCreate
 
   const setupMode = mode === 'client-setup'
   const clientMode = mode === 'client'
+  const activeQueueCount = queueEntries.filter((entry) => ['waiting', 'called'].includes(entry.status)).length
+  const clientNavigation = [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'services', label: 'Available services' },
+    { id: 'requests', label: 'My requests' },
+    { id: 'profile', label: 'My profile' },
+  ]
 
   return <main className="portal-page">
     <header className="portal-header">
@@ -192,30 +210,46 @@ export default function ClientPortal({ mode = 'public', profile, onProfileCreate
     {initialAuthError && <p className="auth-error portal-auth-notice" role="alert">{initialAuthError}</p>}
     {!supabaseConfigured && <section className="portal-setup-warning" role="alert">Online registration and service announcements are unavailable: {supabaseConfigurationError}</section>}
 
-    {clientMode ? <div className="portal-content">
-      <section className="portal-welcome">
-        <div className="eyebrow">YOUR CLIENT PORTAL</div>
-        <h1>Welcome, {profile?.full_name}</h1>
-        <p>View community services and follow your clinic check-in status. Staff will add you to a queue when you arrive.</p>
-      </section>
-      <section className="portal-section">
-        <div className="portal-section-heading"><div><div className="eyebrow">CLINIC VISITS</div><h2>Your queue updates</h2></div></div>
-        {queueError && <p className="auth-error" role="alert">{queueError}</p>}
-        {queueLoading && !queueEntries.length && <p className="portal-muted">Loading your queue…</p>}
-        {!queueLoading && !queueEntries.length && !queueError && <p className="portal-muted">You are not in a clinic queue. Staff will check you in when you arrive for a service.</p>}
-        {queueEntries.length > 0 && <div className="portal-queue-list">{queueEntries.map((entry) => <article className="portal-queue-card" key={entry.id}>
-          <div><span className="eyebrow">{entry.campaign?.title ?? 'Clinic service'}</span><strong>Queue #{entry.queue_number}</strong><small>{entry.campaign?.starts_at ? new Date(entry.campaign.starts_at).toLocaleString() : ''}</small></div>
-          <span className={`portal-status portal-status-${entry.status}`}>{entry.status}</span>
-        </article>)}</div>}
-      </section>
-      <section className="portal-section portal-preferences">
-        <div className="eyebrow">EMAIL PREFERENCES</div>
-        <label className="portal-checkbox"><input type="checkbox" checked={Boolean(profile?.email_notifications)} disabled={preferenceBusy} onChange={updateEmailPreference} /> Email me about upcoming community services.</label>
-        {profileError && <p className="auth-error" role="alert">{profileError}</p>}
-      </section>
-      <section className="portal-section"><div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Open services</h2></div></div>
-        <CampaignList campaigns={campaigns} loading={campaignLoading} error={campaignError} />
-      </section>
+    {clientMode ? <div className="client-dashboard">
+      <aside className="client-sidebar">
+        <div className="client-sidebar-label">CLIENT MENU</div>
+        <nav aria-label="Client navigation">
+          {clientNavigation.map((item) => <button key={item.id} type="button" className={`client-nav-item${clientTab === item.id ? ' client-nav-active' : ''}`} onClick={() => setClientTab(item.id)}>{item.label}</button>)}
+        </nav>
+        <div className="client-sidebar-help"><strong>Need help?</strong><p>Contact your registered community clinic for assistance with a service or request.</p></div>
+      </aside>
+
+      <div className="client-dashboard-main">
+        <section className="portal-welcome client-dashboard-welcome">
+          <div className="eyebrow">CLIENT DASHBOARD</div>
+          <h1>{clientTab === 'dashboard' ? `Welcome, ${profile?.full_name}` : clientNavigation.find((item) => item.id === clientTab)?.label}</h1>
+          <p>{clientTab === 'dashboard' ? 'Your community health services, clinic requests, and registered details in one place.' : 'Your private CareCircle client account.'}</p>
+        </section>
+
+        {clientTab === 'dashboard' && <>
+          <section className="client-stat-grid" aria-label="Client dashboard summary">
+            <article className="client-stat-card"><span>Open services</span><strong>{campaignLoading ? '—' : campaigns.length}</strong><button type="button" onClick={() => setClientTab('services')}>Browse services</button></article>
+            <article className="client-stat-card"><span>Active clinic requests</span><strong>{queueLoading ? '—' : activeQueueCount}</strong><button type="button" onClick={() => setClientTab('requests')}>View requests</button></article>
+            <article className="client-stat-card"><span>Clinic visits</span><strong>{queueLoading ? '—' : queueEntries.length}</strong><button type="button" onClick={() => setClientTab('requests')}>View visit history</button></article>
+          </section>
+          <section className="portal-section client-dashboard-section">
+            <div className="portal-section-heading"><div><div className="eyebrow">YOUR CLINIC STATUS</div><h2>Recent requests</h2></div><button className="portal-text-button" type="button" onClick={() => setClientTab('requests')}>View all</button></div>
+            <ClientQueue entries={queueEntries.slice(0, 3)} loading={queueLoading} error={queueError} />
+          </section>
+          <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Available services</h2></div><button className="portal-text-button" type="button" onClick={() => setClientTab('services')}>View all</button></div>
+            <CampaignList campaigns={campaigns.slice(0, 3)} loading={campaignLoading} error={campaignError} />
+          </section>
+        </>}
+
+        {clientTab === 'services' && <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Available services</h2></div></div><CampaignList campaigns={campaigns} loading={campaignLoading} error={campaignError} /><p className="portal-muted">To request or attend a service, contact your clinic. Clinic staff will verify your details and add you to the queue when you arrive.</p></section>}
+
+        {clientTab === 'requests' && <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">CLINIC VISITS</div><h2>My requests and queue status</h2></div></div><ClientQueue entries={queueEntries} loading={queueLoading} error={queueError} /><p className="portal-muted">Requests and queue entries are managed by clinic staff. Your queue number will appear here after staff check you in.</p></section>}
+
+        {clientTab === 'profile' && <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">YOUR INFORMATION</div><h2>Registered profile</h2></div></div>
+          <dl className="client-profile-grid"><div><dt>Full name</dt><dd>{profile?.full_name || '—'}</dd></div><div><dt>Email address</dt><dd>{profile?.email || '—'}</dd></div><div><dt>Phone number</dt><dd>{profile?.phone || '—'}</dd></div><div><dt>Date of birth</dt><dd>{profile?.birth_date ? new Date(`${profile.birth_date}T00:00:00`).toLocaleDateString() : '—'}</dd></div><div className="client-profile-address"><dt>Home address</dt><dd>{profile?.address || '—'}</dd></div></dl>
+          <section className="portal-preferences"><div className="eyebrow">EMAIL PREFERENCES</div><label className="portal-checkbox"><input type="checkbox" checked={Boolean(profile?.email_notifications)} disabled={preferenceBusy} onChange={updateEmailPreference} /> Email me about upcoming community services.</label>{profileError && <p className="auth-error" role="alert">{profileError}</p>}</section>
+        </section>}
+      </div>
     </div> : setupMode ? <div className="portal-content portal-narrow">
       <section className="portal-welcome"><div className="eyebrow">CLIENT REGISTRATION</div><h1>Complete your profile</h1><p>Signed in as <strong>{profile?.email}</strong>. Your profile is linked to your verified email and protected from other clients.</p></section>
       {profileError && <p className="auth-error" role="alert">{profileError}</p>}
