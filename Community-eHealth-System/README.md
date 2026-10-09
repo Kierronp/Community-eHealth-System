@@ -19,7 +19,7 @@ CareCircle is a React/Vite community-health application using Supabase PostgreSQ
 7. Deploy the public client portal Edge Function. It uses the Supabase `service_role` key only on the server to validate registrations and service sign-ups, enforces connection and account rate limits, and never returns profile or PIN-hash data:
 
    ```powershell
-   supabase functions deploy public-client-portal
+   supabase functions deploy public-client-portal --project-ref uuwcgoejxtispnemglxr
    ```
 
    The function is configured with JWT verification disabled because client users have no auth session; Supabase's API gateway still requires the project API key. Confirm the project URL, API key, and deployment configuration before making the portal public.

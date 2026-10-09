@@ -89,6 +89,9 @@ function PublicClientDashboard({ onStaffLogin }) {
           const responseData = await invokeError.context.json().catch(() => null)
           if (typeof responseData?.error === 'string') throw new Error(responseData.error)
         }
+        if (invokeError.name === 'FunctionsFetchError') {
+          throw new Error('The client registration service is unavailable. Ask the Supabase project admin to deploy the public-client-portal Edge Function, then try again.')
+        }
         throw invokeError
       }
       if (data?.error) throw new Error(data.error)
