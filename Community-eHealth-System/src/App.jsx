@@ -4,11 +4,12 @@ import { supabase, supabaseConfigurationError, supabaseConfigured } from './lib/
 import './App.css'
 
 const ServicesWorkspace = lazy(() => import('./ServicesWorkspace.jsx'))
+const MembersWorkspace = lazy(() => import('./MembersWorkspace.jsx'))
 
 const navigation = [
   { label: 'Dashboard', icon: 'grid' },
   { label: 'AI Assistant', icon: 'sparkles' },
-  { label: 'Patients', icon: 'users' },
+  { label: 'Members', icon: 'users' },
   { label: 'Families', icon: 'family' },
   { label: 'Vaccination', icon: 'shield' },
   { label: 'Inventory', icon: 'box' },
@@ -205,7 +206,7 @@ function App() {
 
   const loadOrganizationData = useCallback(async (isCurrent = () => true) => {
     if (!supabase || !organizationId) return
-    const [patientResult, communityResult, facilityResult, ...moduleResults] = await Promise.all([
+    const [patientResult, communityResult, facilityResult, memberResult, ...moduleResults] = await Promise.all([
       supabase.from('patients')
         .select('id, patient_number, full_name, birth_date, sex, care_program, status, initials, avatar_color, community:communities(name)')
         .eq('organization_id', organizationId)
@@ -220,16 +221,19 @@ function App() {
         .eq('organization_id', organizationId)
         .eq('is_active', true)
         .order('name'),
+      supabase.from('client_profiles')
+        .select('id')
+        .eq('organization_id', organizationId),
       ...Object.values(workspaceConfig).map(({ table, select, order = 'created_at' }) => supabase.from(table)
         .select(select)
         .eq('organization_id', organizationId)
         .order(order, { ascending: false })),
     ])
-    const results = [patientResult, communityResult, facilityResult, ...moduleResults]
+    const results = [patientResult, communityResult, facilityResult, memberResult, ...moduleResults]
     const failedResult = results.find((result) => result.error)
     if (failedResult?.error) throw failedResult.error
     if (!isCurrent()) return
-    const nextData = { patients: patientResult.data ?? [] }
+    const nextData = { patients: patientResult.data ?? [], client_profiles: memberResult.data ?? [] }
     Object.values(workspaceConfig).forEach(({ table }, index) => {
       nextData[table] = moduleResults[index].data ?? []
     })
@@ -495,7 +499,7 @@ function App() {
     const destination = navigation.find((item) => question.includes(item.label.toLowerCase()))
     const response = destination
       ? `Open ${destination.label} from the sidebar to view its organization records.`
-      : 'I can help you find a workspace. Use the sidebar to open patients, families, vaccination, inventory, reports, alerts, services, or users.'
+      : 'I can help you find a workspace. Use the sidebar to open members, families, vaccination, inventory, reports, alerts, services, or users.'
     setMessages((current) => [...current, { from: 'user', text }, { from: 'assistant', text: response }])
     setChatInput('')
   }
@@ -612,8 +616,10 @@ function App() {
           ? supabaseConfigurationError
           : 'Connect Supabase to load your organization records.'
   const memberRole = organizations.find((organization) => organization.organization_id === organizationId)?.member_role
-  const canManageActiveModule = active === 'Patients'
-    ? ['owner', 'admin', 'clinician', 'health_worker'].includes(memberRole)
+  const canManageActiveModule = active === 'Members'
+    ? ['owner', 'admin'].includes(memberRole)
+    : active === 'Patients'
+      ? ['owner', 'admin', 'clinician', 'health_worker'].includes(memberRole)
     : activeModule && (
       activeModule.table === 'inventory_items'
         ? ['owner', 'admin', 'inventory_manager'].includes(memberRole)
@@ -665,18 +671,20 @@ function App() {
         <div className={`database-banner database-${databaseStatus}`} role={databaseStatus === 'error' || databaseStatus === 'configuration-error' ? 'alert' : 'status'}><span className="database-indicator" />{databaseBannerText}</div>
         <div className="page-content">
           {active === 'Dashboard' && <>
-            <div className="welcome-row"><div><div className="eyebrow">ORGANIZATION OVERVIEW</div><h1>{organizations.find((organization) => organization.organization_id === organizationId)?.organization_name ?? 'Workspace'}</h1><p className="page-subtitle">Live records from your selected organization.</p></div><button className="primary-button" type="button" onClick={() => navigate('Patients')}><Icon name="users" size={17} /> View patients</button></div>
+            <div className="welcome-row"><div><div className="eyebrow">ORGANIZATION OVERVIEW</div><h1>{organizations.find((organization) => organization.organization_id === organizationId)?.organization_name ?? 'Workspace'}</h1><p className="page-subtitle">Live records from your selected organization.</p></div><button className="primary-button" type="button" onClick={() => navigate('Members')}><Icon name="users" size={17} /> View members</button></div>
             <section className="stats-grid" aria-label="Organization records">
-              {[['Patients', patientList.length], ['Families', (workspaceData.families ?? []).length], ['Open alerts', (workspaceData.alerts ?? []).filter((row) => row.status === 'open').length]].map(([label, count]) => <article className="stat-card" key={label}><p>{label}</p><strong>{count.toLocaleString()}</strong></article>)}
+              {[['Registered members', (workspaceData.client_profiles ?? []).length], ['Families', (workspaceData.families ?? []).length], ['Open alerts', (workspaceData.alerts ?? []).filter((row) => row.status === 'open').length]].map(([label, count]) => <article className="stat-card" key={label}><p>{label}</p><strong>{count.toLocaleString()}</strong></article>)}
             </section>
             <section className="connected-overview"><h2>Your organization data</h2><p>Records entered in each workspace are saved in Supabase and protected by organization-level access policies.</p></section>
           </>}
 
           {active === 'Services & Queue' && <Suspense fallback={<p className="page-subtitle">Loading service tools…</p>}><ServicesWorkspace organizationId={organizationId} facilities={facilities} memberRole={organizations.find((organization) => organization.organization_id === organizationId)?.member_role} /></Suspense>}
 
+          {active === 'Members' && <Suspense fallback={<p className="page-subtitle">Loading member directory…</p>}><div className="welcome-row"><div><div className="eyebrow">CLIENT DIRECTORY</div><h1>Members</h1><p className="page-subtitle">View registered clients and manage their clinic profiles.</p></div></div><MembersWorkspace organizationId={organizationId} memberRole={memberRole} query={query} /></Suspense>}
+
           {active === 'Patients' && <><div className="welcome-row"><div><div className="eyebrow">PATIENT DIRECTORY</div><h1>Patients</h1><p className="page-subtitle">Manage and follow up with people in your community.</p></div>{canManageActiveModule && <button className="primary-button" type="button" onClick={openRecordModal}><Icon name="plus" size={17} /> Add a patient</button>}</div><div className="module-stats"><div className="module-stat"><span>Total patients</span><strong>{patientList.length.toLocaleString()}</strong><small>In this organization</small></div></div>{recordError && <p className="auth-error" role="alert">{recordError}</p>}<PatientTable patients={matchingPatients} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editPatient} onDelete={deletePatient} /></>}
 
-          {active === 'AI Assistant' && <><div className="welcome-row"><div><div className="eyebrow">WORKSPACE SUPPORT</div><h1>Workspace helper</h1><p className="page-subtitle">Navigation support only; this screen does not use an AI service.</p></div></div><div className="assistant-layout"><section className="panel chat-panel"><div className="chat-header"><span className="assistant-avatar"><Icon name="sparkles" size={20} /></span><div><strong>CareCircle workspace helper</strong><small>Navigation support</small></div></div><div className="chat-messages">{messages.map((message, index) => <div className={`chat-message message-${message.from}`} key={`${message.from}-${index}`}><p>{message.text}</p></div>)}</div><div className="suggestions"><span>Try asking</span>{['Open patients', 'Open inventory'].map((suggestion) => <button type="button" key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>)}</div><form className="chat-form" onSubmit={sendMessage}><input aria-label="Message the workspace helper" placeholder="Ask where to find a workspace..." value={chatInput} onChange={(event) => setChatInput(event.target.value)} /><button aria-label="Send message" type="submit"><Icon name="arrowUp" size={17} /></button></form></section></div></>}
+          {active === 'AI Assistant' && <><div className="welcome-row"><div><div className="eyebrow">WORKSPACE SUPPORT</div><h1>Workspace helper</h1><p className="page-subtitle">Navigation support only; this screen does not use an AI service.</p></div></div><div className="assistant-layout"><section className="panel chat-panel"><div className="chat-header"><span className="assistant-avatar"><Icon name="sparkles" size={20} /></span><div><strong>CareCircle workspace helper</strong><small>Navigation support</small></div></div><div className="chat-messages">{messages.map((message, index) => <div className={`chat-message message-${message.from}`} key={`${message.from}-${index}`}><p>{message.text}</p></div>)}</div><div className="suggestions"><span>Try asking</span>{['Open members', 'Open inventory'].map((suggestion) => <button type="button" key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>)}</div><form className="chat-form" onSubmit={sendMessage}><input aria-label="Message the workspace helper" placeholder="Ask where to find a workspace..." value={chatInput} onChange={(event) => setChatInput(event.target.value)} /><button aria-label="Send message" type="submit"><Icon name="arrowUp" size={17} /></button></form></section></div></>}
 
           {activeModule && <><div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div>{activeModule.fields && canManageActiveModule && <button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name="plus" size={17} />{active === 'Reports' ? 'Request report' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'an item' : active === 'Alerts' ? 'an alert' : 'record'}`}</button>}</div><div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{activeRows.length.toLocaleString()}</strong><small>In this organization</small></div></div>{!activeModule.fields && <div className="form-note">Invite and manage accounts from Supabase Authentication. This screen shows organization memberships only.</div>}{recordError && <p className="auth-error" role="alert">{recordError}</p>}<ModuleTable module={activeModule} rows={activeRows} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editRecord} onDelete={deleteRecord} /></>}
         </div>

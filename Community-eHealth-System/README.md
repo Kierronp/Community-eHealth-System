@@ -5,7 +5,7 @@ CareCircle is a React/Vite community-health application using Supabase PostgreSQ
 ## Connect Supabase
 
 1. Back up any existing data in your Supabase project before applying the schema. The migration disables public access to the old `demo_patients` table if it exists; it does not delete existing records.
-2. Open the Supabase project **SQL Editor**, review and run [`supabase/schema.sql`](./supabase/schema.sql). It creates the client profiles, public service sign-ups, service campaigns, clinic queue, row-level security policies, and database functions. It does not create sample client or patient records. The PIN functions expect `pgcrypto` functions in Supabase's `extensions` schema.
+2. Open the Supabase project **SQL Editor**, review and run [`supabase/schema.sql`](./supabase/schema.sql). Re-run it after updates to add the staff member-management functions. It creates the client profiles, public service sign-ups, service campaigns, clinic queue, row-level security policies, and database functions. It does not create sample client or patient records. The PIN functions expect `pgcrypto` functions in Supabase's `extensions` schema.
 3. The public client dashboard does not require client sign-in or email-link authentication. Staff continue to sign in with email and password through **Admin login**.
 4. Create staff accounts yourself in **Authentication → Users**. Staff sign in with email and password only; no staff registration is available in the app. Assign staff to an organization and set their role in `organization_memberships`. Do not give organization membership to client accounts.
 5. Copy `.env.example` to `.env.local` and fill in the project URL and **publishable/anon** key from Supabase project settings:
@@ -50,7 +50,7 @@ Supabase configuration is required for registration, sign-in, and live service a
 
 ## Connected workspaces
 
-The staff dashboard and Patients, Families, Vaccination, Inventory items, Referrals, Reports, Alerts, QR ID, Users, and Services & Queue workspaces load organization-scoped Supabase records. Authorized roles can add and edit records, with deletion limited to owners/admins and blocked by database relationships when a record is still referenced. QR IDs and memberships remain read-only in the app. Staff accounts without active organization access are not allowed to create an organization from the app; ask the organization head to assign access.
+The staff dashboard and Members, Families, Vaccination, Inventory items, Reports, Alerts, Users, and Services & Queue workspaces load organization-scoped Supabase records. Members lists registered client profiles; owners and admins can add, edit, or delete them. Member PINs are hashed server-side and never displayed. Deleting a member permanently removes their service sign-ups and queue history. Other workspace deletions are limited to owners/admins and blocked by database relationships when a record is still referenced. Staff accounts without active organization access are not allowed to create an organization from the app; ask the organization head to assign access.
 
 The app does not delete or import records from your Supabase project. The migration disables public access to the legacy `demo_patients` table if it exists; it does not delete that table or its rows.
 

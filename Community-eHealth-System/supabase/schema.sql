@@ -711,6 +711,150 @@ begin
 end;
 $$;
 
+create or replace function public.admin_create_client_profile(
+  p_organization_id uuid,
+  p_full_name text,
+  p_email text,
+  p_pin text,
+  p_phone text,
+  p_address text,
+  p_birth_date date,
+  p_email_notifications boolean default false
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  new_profile_id uuid;
+begin
+  if not public.has_org_role(p_organization_id, array['owner', 'admin']) then
+    raise exception 'You do not have permission to manage client members.' using errcode = '42501';
+  end if;
+  if char_length(trim(coalesce(p_full_name, ''))) not between 2 and 120
+    or lower(trim(coalesce(p_email, ''))) !~ '^[a-z0-9.!#$%&''*+/=?^_`{|}~-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$'
+    or coalesce(p_pin, '') !~ '^[0-9]{4}$'
+    or char_length(trim(coalesce(p_phone, ''))) not between 5 and 40
+    or char_length(trim(coalesce(p_address, ''))) not between 2 and 240
+    or p_birth_date is null
+    or p_birth_date > current_date then
+    raise exception 'Enter a valid name, email, four-digit PIN, phone, address, and birth date.' using errcode = '22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(
+    p_organization_id::text || ':' || lower(trim(p_email)),
+    0
+  ));
+  if exists (
+    select 1 from public.client_profiles cp
+    where cp.organization_id = p_organization_id
+      and lower(cp.email) = lower(trim(p_email))
+      and cp.status = 'active'
+  ) then
+    raise exception 'An active member already uses this email at the selected clinic.' using errcode = '23505';
+  end if;
+  insert into public.client_profiles (
+    organization_id, full_name, email, pin_hash, phone, address, birth_date, email_notifications
+  ) values (
+    p_organization_id, trim(p_full_name), lower(trim(p_email)),
+    extensions.crypt(p_pin, extensions.gen_salt('bf')), trim(p_phone), trim(p_address), p_birth_date,
+    coalesce(p_email_notifications, false)
+  )
+  returning id into new_profile_id;
+  return new_profile_id;
+end;
+$$;
+
+create or replace function public.admin_update_client_profile(
+  p_organization_id uuid,
+  p_profile_id uuid,
+  p_full_name text,
+  p_email text,
+  p_pin text,
+  p_phone text,
+  p_address text,
+  p_birth_date date,
+  p_email_notifications boolean,
+  p_status text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.has_org_role(p_organization_id, array['owner', 'admin']) then
+    raise exception 'You do not have permission to manage client members.' using errcode = '42501';
+  end if;
+  if char_length(trim(coalesce(p_full_name, ''))) not between 2 and 120
+    or lower(trim(coalesce(p_email, ''))) !~ '^[a-z0-9.!#$%&''*+/=?^_`{|}~-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$'
+    or (coalesce(p_pin, '') <> '' and p_pin !~ '^[0-9]{4}$')
+    or char_length(trim(coalesce(p_phone, ''))) not between 5 and 40
+    or char_length(trim(coalesce(p_address, ''))) not between 2 and 240
+    or p_birth_date is null
+    or p_birth_date > current_date
+    or coalesce(p_status, '') not in ('active', 'inactive') then
+    raise exception 'Enter valid member details, an optional four-digit PIN, and status.' using errcode = '22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(
+    p_organization_id::text || ':' || lower(trim(p_email)),
+    0
+  ));
+  if exists (
+    select 1 from public.client_profiles cp
+    where cp.organization_id = p_organization_id
+      and cp.id <> p_profile_id
+      and lower(cp.email) = lower(trim(p_email))
+      and cp.status = 'active'
+      and p_status = 'active'
+  ) then
+    raise exception 'An active member already uses this email at the selected clinic.' using errcode = '23505';
+  end if;
+  update public.client_profiles cp
+  set full_name = trim(p_full_name),
+      email = lower(trim(p_email)),
+      pin_hash = case when coalesce(p_pin, '') = '' then cp.pin_hash
+        else extensions.crypt(p_pin, extensions.gen_salt('bf')) end,
+      phone = trim(p_phone),
+      address = trim(p_address),
+      birth_date = p_birth_date,
+      email_notifications = coalesce(p_email_notifications, false),
+      status = p_status
+  where cp.organization_id = p_organization_id and cp.id = p_profile_id;
+  if not found then
+    raise exception 'Member record was not found.' using errcode = 'P0002';
+  end if;
+end;
+$$;
+
+create or replace function public.admin_delete_client_profile(
+  p_organization_id uuid,
+  p_profile_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.has_org_role(p_organization_id, array['owner', 'admin']) then
+    raise exception 'You do not have permission to manage client members.' using errcode = '42501';
+  end if;
+  if not exists (
+    select 1 from public.client_profiles cp
+    where cp.organization_id = p_organization_id and cp.id = p_profile_id
+  ) then
+    raise exception 'Member record was not found.' using errcode = 'P0002';
+  end if;
+  delete from public.queue_entries qe
+  where qe.organization_id = p_organization_id and qe.client_profile_id = p_profile_id;
+  delete from public.client_service_requests csr
+  where csr.organization_id = p_organization_id and csr.client_profile_id = p_profile_id;
+  delete from public.client_profiles cp
+  where cp.organization_id = p_organization_id and cp.id = p_profile_id;
+end;
+$$;
+
 drop function if exists public.request_public_service(uuid, uuid, text, text, text);
 drop function if exists public.join_public_service(uuid, uuid, text, text);
 create function public.join_public_service(
@@ -1018,6 +1162,9 @@ revoke all on function public.create_my_organization(text) from public, anon, au
 revoke all on function public.list_public_organizations() from public;
 revoke all on function public.consume_public_rate_limit(text, integer, integer) from public, anon, authenticated;
 revoke all on function public.register_public_client_profile(uuid, text, text, text, text, text, date, boolean) from public, anon, authenticated;
+revoke all on function public.admin_create_client_profile(uuid, text, text, text, text, text, date, boolean) from public, anon;
+revoke all on function public.admin_update_client_profile(uuid, uuid, text, text, text, text, text, date, boolean, text) from public, anon;
+revoke all on function public.admin_delete_client_profile(uuid, uuid) from public, anon;
 revoke all on function public.verify_public_client_credentials(uuid, text, text) from public, anon, authenticated;
 revoke all on function public.join_public_service(uuid, uuid, text, text) from public, anon, authenticated;
 revoke all on function public.register_client_profile(uuid, text, text, text, text, date, boolean) from public, anon;
@@ -1026,6 +1173,9 @@ revoke all on function public.update_queue_entry_status(uuid, text) from public,
 grant execute on function public.list_public_organizations() to anon, authenticated;
 grant execute on function public.consume_public_rate_limit(text, integer, integer) to service_role;
 grant execute on function public.register_public_client_profile(uuid, text, text, text, text, text, date, boolean) to service_role;
+grant execute on function public.admin_create_client_profile(uuid, text, text, text, text, text, date, boolean) to authenticated;
+grant execute on function public.admin_update_client_profile(uuid, uuid, text, text, text, text, text, date, boolean, text) to authenticated;
+grant execute on function public.admin_delete_client_profile(uuid, uuid) to authenticated;
 grant execute on function public.verify_public_client_credentials(uuid, text, text) to service_role;
 grant execute on function public.join_public_service(uuid, uuid, text, text) to service_role;
 grant execute on function public.register_client_profile(uuid, text, text, text, text, date, boolean) to authenticated;
