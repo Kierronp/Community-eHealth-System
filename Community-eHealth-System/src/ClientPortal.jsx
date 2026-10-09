@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { supabase, supabaseConfigurationError, supabaseConfigured } from './lib/supabase.js'
 
 function PublicClientDashboard({ onStaffLogin }) {
@@ -13,30 +13,44 @@ function PublicClientDashboard({ onStaffLogin }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
-  useEffect(() => {
-    if (!supabase) return undefined
-    let cancelled = false
-    Promise.all([
-      supabase.from('service_campaigns')
+  const loadCampaigns = useCallback(async () => {
+    if (!supabase) return
+    setCampaignLoading(true)
+    setCampaignError('')
+    try {
+      const { data, error } = await supabase.from('service_campaigns')
         .select('id, organization_id, title, service_type, description, starts_at, ends_at')
         .eq('status', 'open')
         .or(`ends_at.is.null,ends_at.gte.${new Date().toISOString()}`)
-        .order('starts_at'),
-      supabase.rpc('list_public_organizations'),
-    ]).then(([campaignResult, organizationResult]) => {
-      if (cancelled) return
-      if (campaignResult.error) setCampaignError(`Could not load service announcements: ${campaignResult.error.message}`)
-      else setCampaigns(campaignResult.data ?? [])
-      if (organizationResult.error) setOrganizationError(`Could not load clinic locations: ${organizationResult.error.message}`)
-      else setOrganizations(organizationResult.data ?? [])
+        .order('starts_at')
+      if (error) throw error
+      setCampaigns(data ?? [])
+    } catch (loadError) {
+      setCampaignError(`Could not load service announcements: ${loadError instanceof Error ? loadError.message : 'Unknown database error.'}`)
+    } finally {
       setCampaignLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!supabase) return undefined
+    let cancelled = false
+    Promise.resolve().then(() => loadCampaigns())
+    supabase.rpc('list_public_organizations').then(({ data, error }) => {
+      if (cancelled) return
+      if (error) setOrganizationError(`Could not load clinic locations: ${error.message}`)
+      else setOrganizations(data ?? [])
     }).catch((loadError) => {
       if (cancelled) return
-      setCampaignError(`Could not load public clinic information: ${loadError instanceof Error ? loadError.message : 'Unknown database error.'}`)
-      setCampaignLoading(false)
+      setOrganizationError(`Could not load clinic locations: ${loadError instanceof Error ? loadError.message : 'Unknown database error.'}`)
     })
     return () => { cancelled = true }
-  }, [])
+  }, [loadCampaigns])
+
+  function navigateTo(nextSection) {
+    if (nextSection === 'services') loadCampaigns()
+    setSection(nextSection)
+  }
 
   async function submitPublicAction(event, action) {
     event.preventDefault()
@@ -86,7 +100,7 @@ function PublicClientDashboard({ onStaffLogin }) {
         setNotice(data?.already_joined
           ? `You are already in this service queue as number ${data?.queue_number}.`
           : `You joined the service. Your queue number is ${data?.queue_number}.`)
-        setSection('services')
+        navigateTo('services')
         setSelectedCampaign(null)
       }
     } catch (actionError) {
@@ -106,7 +120,7 @@ function PublicClientDashboard({ onStaffLogin }) {
 
   return <main className="portal-page">
     <header className="portal-header">
-      <a className="portal-brand" href="#" onClick={(event) => { event.preventDefault(); setSection('dashboard') }}>
+      <a className="portal-brand" href="#" onClick={(event) => { event.preventDefault(); navigateTo('dashboard') }}>
         <span className="brand-mark">+</span><span>CareCircle <small>COMMUNITY HEALTH</small></span>
       </a>
       <button className="portal-text-button" type="button" onClick={() => onStaffLogin ? setSection('staff') : undefined}>Admin login</button>
@@ -116,7 +130,7 @@ function PublicClientDashboard({ onStaffLogin }) {
       <aside className="client-sidebar">
         <div className="client-sidebar-label">CLIENT MENU</div>
         <nav aria-label="Client navigation">
-          {navigation.map((item) => <button key={item.id} type="button" className={`client-nav-item${section === item.id ? ' client-nav-active' : ''}`} onClick={() => { setSection(item.id); setError(''); setNotice('') }}>{item.label}</button>)}
+          {navigation.map((item) => <button key={item.id} type="button" className={`client-nav-item${section === item.id ? ' client-nav-active' : ''}`} onClick={() => { navigateTo(item.id); setError(''); setNotice('') }}>{item.label}</button>)}
         </nav>
         <div className="client-sidebar-help"><strong>Welcome</strong><p>Browse available services without signing in. Register once, then enter your registered name and PIN to join a service.</p></div>
       </aside>
@@ -137,15 +151,18 @@ function PublicClientDashboard({ onStaffLogin }) {
           {notice && <p className="portal-success" role="status">{notice}</p>}
           {section === 'dashboard' && <>
             <section className="client-stat-grid" aria-label="Public dashboard">
-              <article className="client-stat-card"><span>Open services</span><strong>{campaignLoading ? '—' : campaigns.length}</strong><button type="button" onClick={() => setSection('services')}>Browse services</button></article>
+              <article className="client-stat-card"><span>Open services</span><strong>{campaignLoading ? '—' : campaigns.length}</strong><button type="button" onClick={() => navigateTo('services')}>Browse services</button></article>
               <article className="client-stat-card"><span>Client record</span><strong>Optional</strong><button type="button" onClick={() => setSection('register')}>Register account</button></article>
             </section>
             <section className="portal-section client-dashboard-section">
-              <div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Upcoming services</h2></div><button className="portal-text-button" type="button" onClick={() => setSection('services')}>View all</button></div>
+              <div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Upcoming services</h2></div><button className="portal-text-button" type="button" onClick={() => navigateTo('services')}>View all</button></div>
               <PublicCampaignList campaigns={campaigns.slice(0, 3)} organizations={organizations} loading={campaignLoading} error={campaignError} onJoin={(campaign) => { setSelectedCampaign(campaign); setSection('join') }} />
             </section>
           </>}
-          {section === 'services' && <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Available services</h2></div></div><PublicCampaignList campaigns={campaigns} organizations={organizations} loading={campaignLoading} error={campaignError} onJoin={(campaign) => { setSelectedCampaign(campaign); setSection('join') }} /></section>}
+          {section === 'services' && <section className="portal-section client-dashboard-section">
+            <div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Available services</h2></div><button className="portal-text-button" type="button" onClick={loadCampaigns} disabled={campaignLoading}>{campaignLoading ? 'Refreshing…' : 'Refresh services'}</button></div>
+            <PublicCampaignList campaigns={campaigns} organizations={organizations} loading={campaignLoading} error={campaignError} onJoin={(campaign) => { setSelectedCampaign(campaign); setSection('join') }} />
+          </section>}
           {section === 'register' && <section className="portal-section client-dashboard-section">
             <p>Register your details once so the clinic can keep your client record. When you join a service later, enter the same registered full name and four-digit PIN to verify your account.</p>
             <form className="auth-form portal-form public-registration-form" onSubmit={(event) => submitPublicAction(event, 'register')}>
@@ -162,7 +179,7 @@ function PublicClientDashboard({ onStaffLogin }) {
             </form>
           </section>}
           {section === 'join' && selectedCampaign && <section className="portal-section client-dashboard-section">
-            <button className="portal-back-link" type="button" onClick={() => { setSelectedCampaign(null); setSection('services') }}>← Back to services</button>
+            <button className="portal-back-link" type="button" onClick={() => { setSelectedCampaign(null); navigateTo('services') }}>← Back to services</button>
             <h2>{selectedCampaign.title}</h2><p>{selectedCampaign.description || 'Community health service'}</p>
             <p>Enter your registered full name and four-digit PIN to verify your client record and join this service queue. You will receive a queue number in the order you join. If you do not have an account yet, register first using the sidebar.</p>
             <form className="auth-form portal-form public-registration-form" onSubmit={(event) => submitPublicAction(event, 'join')}>

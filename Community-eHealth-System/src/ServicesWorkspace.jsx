@@ -111,6 +111,30 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
     }
   }
 
+  async function deleteCampaign(campaign) {
+    if (!supabase || !window.confirm(
+      `Delete "${campaign.title}" permanently? Its queue entries and client sign-ups for this service will also be deleted.`,
+    )) return
+    setBusy(true)
+    setFormError('')
+    setNotice('')
+    try {
+      const { data, error } = await supabase.from('service_campaigns').delete()
+        .eq('id', campaign.id)
+        .eq('organization_id', organizationId)
+        .select('id')
+        .maybeSingle()
+      if (error) throw error
+      if (!data) throw new Error('Service was not deleted. Confirm you have owner or admin access.')
+      await loadData()
+      setNotice(`Service "${campaign.title}" was deleted.`)
+    } catch (error) {
+      setFormError(`Could not delete service: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function announceCampaign(campaign) {
     if (!supabase) return
     setBusy(true)
@@ -130,7 +154,8 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
 
   const canManageCampaigns = ['owner', 'admin', 'clinician'].includes(memberRole)
   const canManageQueue = ['owner', 'admin', 'clinician', 'health_worker'].includes(memberRole)
-  const canAnnounce = ['owner', 'admin'].includes(memberRole)
+  const canDeleteCampaigns = ['owner', 'admin'].includes(memberRole)
+  const canAnnounce = canDeleteCampaigns
   const visibleQueue = queue
     .filter((entry) => (
       ['waiting', 'called'].includes(entry.status)
@@ -179,6 +204,7 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
             {canManageCampaigns && campaign.status !== 'closed' && <button className="secondary-button" type="button" disabled={busy} onClick={() => setCampaignStatus(campaign, 'closed')}>Close</button>}
             {canManageCampaigns && campaign.status === 'closed' && <button className="secondary-button" type="button" disabled={busy} onClick={() => setCampaignStatus(campaign, 'open')}>Reopen</button>}
             {canAnnounce && campaign.status === 'open' && !campaign.announced_at && <button className="secondary-button" type="button" disabled={busy} onClick={() => announceCampaign(campaign)}>Email opted-in clients</button>}
+            {canDeleteCampaigns && <button className="secondary-button danger-button" type="button" disabled={busy} onClick={() => deleteCampaign(campaign)}>Delete</button>}
             {campaign.announced_at && <small>Announced {new Date(campaign.announced_at).toLocaleDateString()}</small>}
           </div>
         </article>)}
