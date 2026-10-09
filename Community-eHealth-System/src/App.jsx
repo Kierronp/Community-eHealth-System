@@ -304,7 +304,7 @@ function App() {
           return
         }
         const { data: profile, error: profileError } = await supabase.from('client_profiles')
-          .select('id, full_name, email, phone, address, birth_date, email_notifications, status')
+          .select('id, member_number, full_name, email, phone, address, birth_date, email_notifications, status')
           .maybeSingle()
         if (cancelled) return
         if (profileError) {
@@ -313,7 +313,9 @@ function App() {
           return
         }
         setClientProfile(profile)
-        setAccountType(profile ? profile.status === 'active' ? 'client' : 'client-inactive' : 'client-registration')
+        setAccountType(profile
+          ? profile.status === 'active' ? 'client' : profile.status === 'pending' ? 'client-pending' : 'client-inactive'
+          : 'client-registration')
         setDatabaseStatus('connected')
         return
       }
@@ -526,17 +528,17 @@ function App() {
 
   async function completeClientProfile() {
     const { data, error } = await supabase.from('client_profiles')
-      .select('id, full_name, email, phone, address, birth_date, email_notifications, status')
+      .select('id, member_number, full_name, email, phone, address, birth_date, email_notifications, status')
       .single()
     if (error) throw error
     setClientProfile(data)
-    setAccountType('client')
+    setAccountType(data.status === 'active' ? 'client' : 'client-pending')
     setDatabaseStatus('connected')
   }
 
   async function reloadClientProfile() {
     const { data, error } = await supabase.from('client_profiles')
-      .select('id, full_name, email, phone, address, birth_date, email_notifications, status')
+      .select('id, member_number, full_name, email, phone, address, birth_date, email_notifications, status')
       .single()
     if (error) throw error
     setClientProfile(data)
@@ -581,6 +583,9 @@ function App() {
   }
   if (accountType === 'client-inactive') {
     return <AuthFrame><div className="eyebrow">CLIENT ACCOUNT</div><h1>Account inactive</h1><p className="auth-description">Please contact your clinic to restore access to your client portal.</p><button className="auth-link" type="button" onClick={signOut}>Sign out</button></AuthFrame>
+  }
+  if (accountType === 'client-pending') {
+    return <AuthFrame><div className="eyebrow">CLIENT APPLICATION</div><h1>Waiting for clinic approval</h1><p className="auth-description">Your application is on hold until clinic staff review it. Save your member ID and use it with your PIN after approval.</p><p className="form-note">Member ID: <strong>{clientProfile?.member_number ?? 'Unavailable'}</strong></p><button className="auth-link" type="button" onClick={signOut}>Sign out</button></AuthFrame>
   }
   if (accountType === 'client-blocked') {
     return <AuthFrame><div className="eyebrow">STAFF ACCOUNT</div><h1>Use staff sign-in</h1><p className="auth-description">Staff accounts cannot use client email sign-in. Sign out, then use the password login from the staff login button.</p><button className="auth-link" type="button" onClick={signOut}>Sign out</button></AuthFrame>

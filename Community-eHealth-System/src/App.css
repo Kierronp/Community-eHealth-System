@@ -2424,6 +2424,47 @@ tbody tr:hover {
   margin: 12px 18px;
 }
 
+.member-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 18px 14px;
+  border-bottom: 1px solid #edf1ee;
+}
+
+.member-tab {
+  min-height: 35px;
+  padding: 0 12px;
+  border: 1px solid #e2e8e3;
+  border-radius: 6px;
+  color: #637168;
+  background: #fff;
+  font-size: 11px;
+}
+
+.member-tab span {
+  display: inline-grid;
+  min-width: 19px;
+  height: 19px;
+  place-items: center;
+  margin-left: 5px;
+  border-radius: 10px;
+  color: #68766d;
+  background: #f0f3f0;
+  font-size: 10px;
+}
+
+.member-tab-active {
+  border-color: #c8ded0;
+  color: #367c5e;
+  background: #edf7f0;
+  font-weight: 700;
+}
+
+.member-tab-active span {
+  color: #fff;
+  background: #4c9067;
+}
+
 .form-note {
   display: flex;
   align-items: center;

@@ -15,7 +15,7 @@ CareCircle is a React/Vite community-health application using Supabase PostgreSQ
    VITE_SUPABASE_ANON_KEY=your-supabase-publishable-or-anon-key
    ```
 
-6. Restart the Vite server. The public client dashboard is the default. Clients can browse services without signing in. Clients who need a clinic record can register from the sidebar with their profile details and choose a four-digit PIN. To join any available service, they enter the full name and PIN already registered at that clinic; unregistered clients must register first. A successful join automatically assigns the next queue number for that service. The PIN is hashed in the database; it is never returned to the browser or accepted by a directly callable anonymous database function.
+6. Restart the Vite server. The public client dashboard is the default. Clients can browse services without signing in. When clients register from the sidebar, the application is held for clinic approval and they receive a unique member ID; they should save it. Owners/admins can review applications under **Members → Pending applications**. Once approved, a client joins services with the member ID and four-digit PIN, so clients with identical names are distinguished reliably. A successful join automatically assigns the next queue number. The PIN is hashed in the database; it is never returned to the browser or accepted by a directly callable anonymous database function.
 7. Deploy the public client portal Edge Function. It uses the Supabase `service_role` key only on the server to validate registrations and service sign-ups, enforces connection and account rate limits, and never returns profile or PIN-hash data:
 
    ```powershell
@@ -26,7 +26,7 @@ CareCircle is a React/Vite community-health application using Supabase PostgreSQ
 
 ## Services, queue, and email announcements
 
-Staff with an owner, admin, or clinician role can publish open services in **Services & Queue**. Only available services appear on the public client dashboard. Clients register their profile separately if they need a clinic record; joining a service requires matching registered full name and PIN. Each successful join receives the next queue number for that service and appears in the staff queue in number order. Staff can call waiting clients and use **Finish & remove** after serving a client; completed entries are hidden from the active queue while their queue numbers remain reserved.
+Staff with an owner, admin, or clinician role can publish open services in **Services & Queue**. Only available services appear on the public client dashboard. Clients register their profile separately if they need a clinic record; joining a service requires an approved member ID and PIN. Each successful join receives the next queue number for that service and appears in the staff queue in number order. Staff can call waiting clients and use **Finish & remove** after serving a client; completed entries are hidden from the active queue while their queue numbers remain reserved.
 
 Campaign email is optional and only sent to clients who explicitly checked the email-notifications option during registration. Since public registration does not verify email ownership, notices must contain only general service information and no sensitive health information. Email is sent by the Supabase Edge Function, not by browser code:
 
@@ -50,7 +50,7 @@ Supabase configuration is required for registration, sign-in, and live service a
 
 ## Connected workspaces
 
-The staff dashboard and Members, Families, Vaccination, Inventory items, Reports, Alerts, Users, and Services & Queue workspaces load organization-scoped Supabase records. Members lists registered client profiles; owners and admins can add, edit, or delete them. Member PINs are hashed server-side and never displayed. Deleting a member permanently removes their service sign-ups and queue history. Other workspace deletions are limited to owners/admins and blocked by database relationships when a record is still referenced. Staff accounts without active organization access are not allowed to create an organization from the app; ask the organization head to assign access.
+The staff dashboard and Members, Families, Vaccination, Inventory items, Reports, Alerts, Users, and Services & Queue workspaces load organization-scoped Supabase records. Members lists approved/inactive client profiles and has a separate Pending applications tab. Owners and admins can approve or reject applications, add, edit, or delete members. Rejected applications are retained as inactive records. Each member has a unique clinic member ID; member PINs are hashed server-side and never displayed. Deleting a member permanently removes their service sign-ups and queue history. Other workspace deletions are limited to owners/admins and blocked by database relationships when a record is still referenced. Staff accounts without active organization access are not allowed to create an organization from the app; ask the organization head to assign access.
 
 The app does not delete or import records from your Supabase project. The migration disables public access to the legacy `demo_patients` table if it exists; it does not delete that table or its rows.
 

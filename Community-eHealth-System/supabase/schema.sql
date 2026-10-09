@@ -352,6 +352,7 @@ create table if not exists public.client_profiles (
   id uuid primary key default gen_random_uuid(),
   user_id uuid unique references auth.users(id) on delete cascade,
   organization_id uuid not null references public.organizations(id) on delete cascade,
+  member_number text not null default ('CC-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16))),
   full_name text not null check (char_length(trim(full_name)) between 2 and 120),
   email text not null,
   pin_hash text not null,
@@ -359,11 +360,23 @@ create table if not exists public.client_profiles (
   address text not null check (char_length(trim(address)) between 2 and 240),
   birth_date date not null,
   email_notifications boolean not null default false,
-  status text not null default 'active' check (status in ('active', 'inactive')),
+  status text not null default 'active' check (status in ('pending', 'active', 'inactive')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (organization_id, id)
 );
+alter table public.client_profiles add column if not exists member_number text;
+update public.client_profiles
+set member_number = 'CC-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16))
+where member_number is null;
+alter table public.client_profiles
+  alter column member_number set default ('CC-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16))),
+  alter column member_number set not null;
+create unique index if not exists client_profiles_org_member_number_key
+  on public.client_profiles (organization_id, member_number);
+alter table public.client_profiles drop constraint if exists client_profiles_status_check;
+alter table public.client_profiles add constraint client_profiles_status_check
+  check (status in ('pending', 'active', 'inactive'));
 alter table public.client_profiles alter column email_notifications set default false;
 alter table public.client_profiles alter column user_id drop not null;
 alter table public.client_profiles alter column email drop not null;
@@ -646,22 +659,23 @@ declare
   matching_client_count integer;
 begin
   if coalesce(p_pin, '') !~ '^[0-9]{4}$' then
-    raise exception 'We could not verify those details. Check your clinic, full name, and PIN.' using errcode = '22023';
+    raise exception 'We could not verify those details. Check your clinic, member ID, and PIN.' using errcode = '22023';
   end if;
   select count(*), min(cp.id::text)::uuid into matching_client_count, matching_client_id
   from public.client_profiles cp
   where cp.organization_id = p_organization_id
     and cp.status = 'active'
-    and lower(trim(cp.full_name)) = lower(trim(coalesce(p_full_name, '')))
+    and upper(trim(cp.member_number)) = upper(trim(coalesce(p_full_name, '')))
     and cp.pin_hash = extensions.crypt(p_pin, cp.pin_hash);
   if matching_client_count <> 1 then
-    raise exception 'We could not verify those details. Check your clinic, full name, and PIN.' using errcode = '22023';
+    raise exception 'We could not verify those details. Check your clinic, member ID, and PIN.' using errcode = '22023';
   end if;
   return matching_client_id;
 end;
 $$;
 
-create or replace function public.register_public_client_profile(
+drop function if exists public.register_public_client_profile(uuid, text, text, text, text, text, date, boolean);
+create function public.register_public_client_profile(
   p_organization_id uuid,
   p_full_name text,
   p_email text,
@@ -671,13 +685,13 @@ create or replace function public.register_public_client_profile(
   p_birth_date date,
   p_email_notifications boolean
 )
-returns uuid
+returns text
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-  new_profile_id uuid;
+  new_member_number text;
 begin
   if char_length(trim(coalesce(p_full_name, ''))) not between 2 and 120
     or lower(trim(coalesce(p_email, ''))) !~ '^[a-z0-9.!#$%&''*+/=?^_`{|}~-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$'
@@ -695,19 +709,19 @@ begin
     select 1 from public.client_profiles cp
     where cp.organization_id = p_organization_id
       and lower(cp.email) = lower(trim(p_email))
-      and cp.status = 'active'
+      and cp.status in ('pending', 'active')
   ) then
     raise exception 'An account already uses this email at the selected clinic. Contact the clinic for help.' using errcode = '23505';
   end if;
   insert into public.client_profiles (
-    organization_id, full_name, email, pin_hash, phone, address, birth_date, email_notifications
+    organization_id, full_name, email, pin_hash, phone, address, birth_date, email_notifications, status
   ) values (
     p_organization_id, trim(p_full_name), lower(trim(p_email)),
     extensions.crypt(p_pin, extensions.gen_salt('bf')), trim(p_phone), trim(p_address), p_birth_date,
-    coalesce(p_email_notifications, false)
+    coalesce(p_email_notifications, false), 'pending'
   )
-  returning id into new_profile_id;
-  return new_profile_id;
+  returning member_number into new_member_number;
+  return new_member_number;
 end;
 $$;
 
@@ -749,7 +763,7 @@ begin
     select 1 from public.client_profiles cp
     where cp.organization_id = p_organization_id
       and lower(cp.email) = lower(trim(p_email))
-      and cp.status = 'active'
+      and cp.status in ('pending', 'active')
   ) then
     raise exception 'An active member already uses this email at the selected clinic.' using errcode = '23505';
   end if;
@@ -793,7 +807,7 @@ begin
     or char_length(trim(coalesce(p_address, ''))) not between 2 and 240
     or p_birth_date is null
     or p_birth_date > current_date
-    or coalesce(p_status, '') not in ('active', 'inactive') then
+    or coalesce(p_status, '') not in ('pending', 'active', 'inactive') then
     raise exception 'Enter valid member details, an optional four-digit PIN, and status.' using errcode = '22023';
   end if;
   perform pg_advisory_xact_lock(hashtextextended(
@@ -805,8 +819,8 @@ begin
     where cp.organization_id = p_organization_id
       and cp.id <> p_profile_id
       and lower(cp.email) = lower(trim(p_email))
-      and cp.status = 'active'
-      and p_status = 'active'
+      and cp.status in ('pending', 'active')
+      and p_status in ('pending', 'active')
   ) then
     raise exception 'An active member already uses this email at the selected clinic.' using errcode = '23505';
   end if;
@@ -855,12 +869,40 @@ begin
 end;
 $$;
 
+create or replace function public.admin_review_client_profile(
+  p_organization_id uuid,
+  p_profile_id uuid,
+  p_decision text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.has_org_role(p_organization_id, array['owner', 'admin']) then
+    raise exception 'You do not have permission to review client applications.' using errcode = '42501';
+  end if;
+  if coalesce(p_decision, '') not in ('approve', 'reject') then
+    raise exception 'Choose whether to approve or reject this application.' using errcode = '22023';
+  end if;
+  update public.client_profiles cp
+  set status = case when p_decision = 'approve' then 'active' else 'inactive' end
+  where cp.organization_id = p_organization_id
+    and cp.id = p_profile_id
+    and cp.status = 'pending';
+  if not found then
+    raise exception 'Pending application was not found or has already been reviewed.' using errcode = 'P0002';
+  end if;
+end;
+$$;
+
 drop function if exists public.request_public_service(uuid, uuid, text, text, text);
 drop function if exists public.join_public_service(uuid, uuid, text, text);
 create function public.join_public_service(
   p_organization_id uuid,
   p_campaign_id uuid,
-  p_full_name text,
+  p_member_number text,
   p_pin text
 )
 returns table (join_id uuid, already_joined boolean, assigned_queue_number integer)
@@ -876,9 +918,9 @@ declare
   already_on_list boolean := false;
   allocated_number integer;
 begin
-  if char_length(trim(coalesce(p_full_name, ''))) not between 2 and 120
+  if char_length(trim(coalesce(p_member_number, ''))) not between 3 and 32
     or coalesce(p_pin, '') !~ '^[0-9]{4}$' then
-    raise exception 'Enter your registered full name and four-digit PIN.' using errcode = '22023';
+    raise exception 'Enter your member ID and four-digit PIN.' using errcode = '22023';
   end if;
   perform 1 from public.service_campaigns c
     where c.id = p_campaign_id and c.organization_id = p_organization_id
@@ -889,7 +931,7 @@ begin
     raise exception 'This service is no longer accepting sign-ups.' using errcode = '22023';
   end if;
   perform pg_advisory_xact_lock(hashtextextended(
-    p_organization_id::text || ':' || lower(trim(p_full_name)),
+    p_organization_id::text || ':' || upper(trim(p_member_number)),
     0
   ));
   select count(*), count(*) filter (
@@ -899,19 +941,19 @@ begin
   from public.client_profiles cp
   where cp.organization_id = p_organization_id
     and cp.status = 'active'
-    and lower(trim(cp.full_name)) = lower(trim(p_full_name));
+    and upper(trim(cp.member_number)) = upper(trim(p_member_number));
   if same_name_count = 0 then
-    raise exception 'No client account was found with that name. Please register with this clinic before joining a service.' using errcode = '22023';
+    raise exception 'No approved member account was found with that ID. Check your member ID or ask the clinic to review your application.' using errcode = '22023';
   elsif matching_count = 1 then
     select cp.id into client_id
     from public.client_profiles cp
     where cp.organization_id = p_organization_id
       and cp.status = 'active'
-      and lower(trim(cp.full_name)) = lower(trim(p_full_name))
+      and upper(trim(cp.member_number)) = upper(trim(p_member_number))
       and cp.pin_hash = extensions.crypt(p_pin, cp.pin_hash)
     limit 1;
   else
-    raise exception 'We could not verify those details. Check your clinic, registered full name, and PIN.' using errcode = '22023';
+    raise exception 'We could not verify those details. Check your clinic, member ID, and PIN.' using errcode = '22023';
   end if;
   select csr.id into service_join_id
   from public.client_service_requests csr
@@ -996,11 +1038,11 @@ begin
   end if;
 
   insert into public.client_profiles (
-    user_id, organization_id, full_name, email, pin_hash, phone, address, birth_date, email_notifications
+    user_id, organization_id, full_name, email, pin_hash, phone, address, birth_date, email_notifications, status
   ) values (
     auth.uid(), p_organization_id, trim(p_full_name), verified_email,
     extensions.crypt(p_pin, extensions.gen_salt('bf')), trim(p_phone), trim(p_address), p_birth_date,
-    coalesce(p_email_notifications, false)
+    coalesce(p_email_notifications, false), 'pending'
   )
   returning id into new_profile_id;
   return new_profile_id;
@@ -1165,6 +1207,7 @@ revoke all on function public.register_public_client_profile(uuid, text, text, t
 revoke all on function public.admin_create_client_profile(uuid, text, text, text, text, text, date, boolean) from public, anon;
 revoke all on function public.admin_update_client_profile(uuid, uuid, text, text, text, text, text, date, boolean, text) from public, anon;
 revoke all on function public.admin_delete_client_profile(uuid, uuid) from public, anon;
+revoke all on function public.admin_review_client_profile(uuid, uuid, text) from public, anon;
 revoke all on function public.verify_public_client_credentials(uuid, text, text) from public, anon, authenticated;
 revoke all on function public.join_public_service(uuid, uuid, text, text) from public, anon, authenticated;
 revoke all on function public.register_client_profile(uuid, text, text, text, text, date, boolean) from public, anon;
@@ -1176,6 +1219,7 @@ grant execute on function public.register_public_client_profile(uuid, text, text
 grant execute on function public.admin_create_client_profile(uuid, text, text, text, text, text, date, boolean) to authenticated;
 grant execute on function public.admin_update_client_profile(uuid, uuid, text, text, text, text, text, date, boolean, text) to authenticated;
 grant execute on function public.admin_delete_client_profile(uuid, uuid) to authenticated;
+grant execute on function public.admin_review_client_profile(uuid, uuid, text) to authenticated;
 grant execute on function public.verify_public_client_credentials(uuid, text, text) to service_role;
 grant execute on function public.join_public_service(uuid, uuid, text, text) to service_role;
 grant execute on function public.register_client_profile(uuid, text, text, text, text, date, boolean) to authenticated;
@@ -1192,7 +1236,7 @@ revoke all on public.service_campaigns from anon;
 grant select (id, organization_id, title, service_type, description, starts_at, ends_at, status)
   on public.service_campaigns to anon;
 grant select (
-  id, user_id, organization_id, full_name, email, phone, address, birth_date,
+  id, user_id, organization_id, member_number, full_name, email, phone, address, birth_date,
   email_notifications, status, created_at, updated_at
 ) on public.client_profiles to authenticated;
 grant update(status) on public.client_profiles to authenticated;

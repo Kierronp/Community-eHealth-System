@@ -59,6 +59,7 @@ function PublicClientDashboard({ onStaffLogin }) {
     const values = new FormData(form)
     const organizationId = String(values.get('organization_id') ?? '')
     const fullName = String(values.get('full_name') ?? '').trim()
+    const memberNumber = String(values.get('member_number') ?? '').trim()
     const pin = String(values.get('pin') ?? '')
     setBusy(true)
     setError('')
@@ -80,7 +81,7 @@ function PublicClientDashboard({ onStaffLogin }) {
           action,
           organization_id: selectedCampaign.organization_id,
           campaign_id: selectedCampaign.id,
-          full_name: fullName,
+          member_number: memberNumber,
           pin,
         }
       const { data, error: invokeError } = await supabase.functions.invoke('public-client-portal', { body })
@@ -97,7 +98,7 @@ function PublicClientDashboard({ onStaffLogin }) {
       if (data?.error) throw new Error(data.error)
       if (action === 'register') {
         form.reset()
-        setNotice('Your client account is registered. Use this exact full name and four-digit PIN when joining a service.')
+        setNotice(`Your application is pending clinic approval. Save your member ID: ${data.member_number}. You will need it with your PIN after the clinic approves your account.`)
         setSection('dashboard')
       } else {
         setNotice(data?.already_joined
@@ -135,7 +136,7 @@ function PublicClientDashboard({ onStaffLogin }) {
         <nav aria-label="Client navigation">
           {navigation.map((item) => <button key={item.id} type="button" className={`client-nav-item${section === item.id ? ' client-nav-active' : ''}`} onClick={() => { navigateTo(item.id); setError(''); setNotice('') }}>{item.label}</button>)}
         </nav>
-        <div className="client-sidebar-help"><strong>Welcome</strong><p>Browse available services without signing in. Register once, then enter your registered name and PIN to join a service.</p></div>
+        <div className="client-sidebar-help"><strong>Welcome</strong><p>Browse available services without signing in. Register once, then use your member ID and PIN to join a service after the clinic approves your application.</p></div>
       </aside>
       <div className="client-dashboard-main">
         {section === 'staff' ? <section className="portal-auth-card">
@@ -167,7 +168,7 @@ function PublicClientDashboard({ onStaffLogin }) {
             <PublicCampaignList campaigns={campaigns} organizations={organizations} loading={campaignLoading} error={campaignError} onJoin={(campaign) => { setSelectedCampaign(campaign); setSection('join') }} />
           </section>}
           {section === 'register' && <section className="portal-section client-dashboard-section">
-            <p>Register your details once so the clinic can keep your client record. When you join a service later, enter the same registered full name and four-digit PIN to verify your account.</p>
+            <p>Register your details once to apply for a clinic member record. The clinic must approve your application before you can join services. After registering, save the member ID shown in the confirmation and use it with your PIN.</p>
             <form className="auth-form portal-form public-registration-form" onSubmit={(event) => submitPublicAction(event, 'register')}>
               <label>Clinic or organization<select name="organization_id" required defaultValue=""><option value="" disabled>Select your clinic</option>{organizations.map((organization) => <option key={organization.organization_id} value={organization.organization_id}>{organization.organization_name}</option>)}</select></label>
               <label>Full name<input name="full_name" required minLength="2" maxLength="120" autoComplete="name" /></label>
@@ -184,9 +185,9 @@ function PublicClientDashboard({ onStaffLogin }) {
           {section === 'join' && selectedCampaign && <section className="portal-section client-dashboard-section">
             <button className="portal-back-link" type="button" onClick={() => { setSelectedCampaign(null); navigateTo('services') }}>← Back to services</button>
             <h2>{selectedCampaign.title}</h2><p>{selectedCampaign.description || 'Community health service'}</p>
-            <p>Enter your registered full name and four-digit PIN to verify your client record and join this service queue. You will receive a queue number in the order you join. If you do not have an account yet, register first using the sidebar.</p>
+            <p>Enter your member ID and four-digit PIN to verify your approved client record and join this service queue. You will receive a queue number in the order you join. If you do not have a member ID yet, register first and wait for clinic approval.</p>
             <form className="auth-form portal-form public-registration-form" onSubmit={(event) => submitPublicAction(event, 'join')}>
-              <label>Registered full name<input name="full_name" required autoComplete="name" /></label>
+              <label>Member ID<input name="member_number" required minLength="3" maxLength="32" autoCapitalize="characters" autoComplete="off" /></label>
               <label>4-digit clinic PIN<input name="pin" required inputMode="numeric" pattern="[0-9]{4}" maxLength="4" autoComplete="off" /></label>
               <p className="portal-muted">Joining assigns your place in line automatically. Keep your queue number for when the clinic calls you.</p>
               <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Joining…' : 'Join service'}</button>
