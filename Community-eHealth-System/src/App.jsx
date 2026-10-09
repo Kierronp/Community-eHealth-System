@@ -587,11 +587,12 @@ function App() {
     return <ClientPortal />
   }
 
+  if (authMode !== 'staff') {
+    return <ClientPortal onStaffLogin={signIn} onClientAuthStart={beginClientSignIn} />
+  }
+
   if (authLoading) {
     return <AuthFrame><p>Restoring your secure session…</p></AuthFrame>
-  }
-  if (session && authMode === 'public') {
-    return <ClientPortal onStaffLogin={signIn} onClientAuthStart={beginClientSignIn} />
   }
   if (!session) {
     return <ClientPortal onStaffLogin={signIn} onClientAuthStart={beginClientSignIn} initialAuthError={authError} />

@@ -1,0 +1,2 @@
+[functions.public-client-portal]
+verify_jwt = false

@@ -69,6 +69,7 @@ Deno.serve(async (request: Request) => {
         .eq('organization_id', campaign.organization_id)
         .eq('status', 'active')
         .eq('email_notifications', true)
+        .not('email', 'is', null)
         .range(offset, offset + 499)
       if (error) return response(500, { error: 'Could not load opted-in client email addresses.' })
       recipients.push(...(data ?? []))

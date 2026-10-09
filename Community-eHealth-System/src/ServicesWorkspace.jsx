@@ -9,9 +9,7 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
   const [formError, setFormError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [selectedCampaign, setSelectedCampaign] = useState('')
   const [queueCampaignFilter, setQueueCampaignFilter] = useState('')
-  const [checkInResult, setCheckInResult] = useState('')
 
   const loadData = useCallback(async () => {
     if (!supabase || !organizationId) return
@@ -23,7 +21,8 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
       supabase.from('queue_entries')
         .select('id, campaign_id, queue_number, status, checked_in_at, client:client_profiles(full_name, phone), campaign:service_campaigns(title)')
         .eq('organization_id', organizationId)
-        .order('queue_number'),
+        .order('queue_number')
+        .order('campaign_id'),
     ])
     setLoadError('')
     const failure = campaignResult.error || queueResult.error
@@ -70,41 +69,13 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
         ends_at: values.get('ends_at') ? new Date(String(values.get('ends_at'))).toISOString() : null,
         status: 'open',
       }
-      const { data, error } = await supabase.from('service_campaigns').insert(record).select('id').single()
+      const { error } = await supabase.from('service_campaigns').insert(record)
       if (error) throw error
       form.reset()
       await loadData()
-      setSelectedCampaign(data.id)
       setNotice('Service published to the client portal.')
     } catch (error) {
       setFormError(`Could not create service: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function checkInClient(event) {
-    event.preventDefault()
-    if (!supabase) return
-    const form = event.currentTarget
-    const values = new FormData(event.currentTarget)
-    setBusy(true)
-    setFormError('')
-    setCheckInResult('')
-    try {
-      const { data, error } = await supabase.rpc('check_in_client', {
-        p_campaign_id: values.get('campaign_id'),
-        p_full_name: String(values.get('full_name') ?? '').trim(),
-        p_pin: String(values.get('pin') ?? ''),
-      })
-      if (error) throw error
-      const entry = data?.[0]
-      if (!entry) throw new Error('The database did not return a queue number.')
-      setCheckInResult(`Client verified. Queue number: ${entry.assigned_queue_number}.`)
-      form.reset()
-      await loadData()
-    } catch (error) {
-      setFormError(`Could not check in client: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
     } finally {
       setBusy(false)
     }
@@ -157,17 +128,27 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
     }
   }
 
-  const openCampaigns = campaigns.filter((campaign) => campaign.status === 'open')
   const canManageCampaigns = ['owner', 'admin', 'clinician'].includes(memberRole)
-  const canCheckIn = ['owner', 'admin', 'clinician', 'health_worker'].includes(memberRole)
+  const canManageQueue = ['owner', 'admin', 'clinician', 'health_worker'].includes(memberRole)
   const canAnnounce = ['owner', 'admin'].includes(memberRole)
-  const checkInCampaign = openCampaigns.some((campaign) => campaign.id === selectedCampaign)
-    ? selectedCampaign
-    : openCampaigns[0]?.id ?? ''
-  const visibleQueue = queue.filter((entry) => !queueCampaignFilter || entry.campaign_id === queueCampaignFilter)
+  const visibleQueue = queue
+    .filter((entry) => (
+      ['waiting', 'called'].includes(entry.status)
+      && (!queueCampaignFilter || entry.campaign_id === queueCampaignFilter)
+    ))
+    .sort((left, right) => (
+      left.queue_number - right.queue_number
+      || (left.campaign?.title ?? '').localeCompare(right.campaign?.title ?? '')
+    ))
+  const nextQueueEntryIdByCampaign = new Map()
+  for (const entry of visibleQueue) {
+    if (entry.status === 'waiting' && !nextQueueEntryIdByCampaign.has(entry.campaign_id)) {
+      nextQueueEntryIdByCampaign.set(entry.campaign_id, entry.id)
+    }
+  }
 
   return <div className="services-workspace">
-    <div className="welcome-row"><div><div className="eyebrow">COMMUNITY SERVICES</div><h1>Services &amp; clinic queue</h1><p className="page-subtitle">Publish services, verify clients at check-in, and call the queue in order.</p></div><button className="secondary-button" type="button" onClick={loadData} disabled={loading}>Refresh</button></div>
+    <div className="welcome-row"><div><div className="eyebrow">COMMUNITY SERVICES</div><h1>Services &amp; clinic queue</h1><p className="page-subtitle">Publish services and manage the queue in the order clients join.</p></div><button className="secondary-button" type="button" onClick={loadData} disabled={loading}>Refresh</button></div>
     {loadError && <p className="auth-error" role="alert">{loadError}</p>}
     {formError && <p className="auth-error" role="alert">{formError}</p>}
     {notice && <p className="portal-success" role="status">{notice}</p>}
@@ -186,16 +167,6 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
         </form>
       </section>}
 
-      {canCheckIn && <section className="connected-overview service-form-card">
-        <h2>Check in a client</h2><p>Verify the client’s registered full name and clinic PIN in person. A client receives only one queue number per service.</p>
-        <form className="auth-form portal-form" onSubmit={checkInClient}>
-          <label>Open service<select name="campaign_id" required value={checkInCampaign} onChange={(event) => setSelectedCampaign(event.target.value)}><option value="" disabled>Select a service</option>{openCampaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.title}</option>)}</select></label>
-          <label>Client full name<input name="full_name" required autoComplete="off" /></label>
-          <label>4-digit clinic PIN<input name="pin" required inputMode="numeric" pattern="[0-9]{4}" maxLength="4" autoComplete="off" /></label>
-          <button className="primary-button" type="submit" disabled={busy || !openCampaigns.length}>{busy ? 'Verifying…' : 'Verify and check in'}</button>
-        </form>
-        {checkInResult && <p className="portal-success" role="status">{checkInResult}</p>}
-      </section>}
     </div>
 
     <section className="connected-overview service-campaign-list">
@@ -215,14 +186,14 @@ export default function ServicesWorkspace({ organizationId, facilities = [], mem
     </section>
 
     <section className="connected-overview service-queue-list">
-      <div className="portal-section-heading"><div><div className="eyebrow">LIVE CLINIC QUEUE</div><h2>Check-ins</h2></div>
+      <div className="portal-section-heading"><div><div className="eyebrow">LIVE CLINIC QUEUE</div><h2>Queue</h2><p className="portal-muted">Clients are numbered automatically when they join a service.</p></div>
         <select aria-label="Filter queue by service" value={queueCampaignFilter} onChange={(event) => setQueueCampaignFilter(event.target.value)}><option value="">All services</option>{campaigns.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.title}</option>)}</select>
       </div>
-      {loading && !queue.length ? <p className="portal-muted">Loading queue…</p> : !visibleQueue.length ? <p className="portal-muted">No clients have checked in for this service.</p> : <div className="staff-queue-table">
+      {loading && !queue.length ? <p className="portal-muted">Loading queue…</p> : !visibleQueue.length ? <p className="portal-muted">No clients are waiting in this service queue.</p> : <div className="staff-queue-table">
         <div className="staff-queue-head"><span>Queue</span><span>Client</span><span>Service</span><span>Status</span><span>Action</span></div>
         {visibleQueue.map((entry) => <article className="staff-queue-row" key={entry.id}>
-          <strong>#{entry.queue_number}</strong><span>{entry.client?.full_name}<small>{entry.client?.phone}</small></span><span>{entry.campaign?.title}</span><span className={`portal-status portal-status-${entry.status}`}>{entry.status}</span>
-          <span>{canCheckIn && entry.status === 'waiting' ? <button className="secondary-button" type="button" disabled={busy} onClick={() => updateStatus(entry.id, 'called')}>Call</button> : canCheckIn && entry.status === 'called' ? <button className="secondary-button" type="button" disabled={busy} onClick={() => updateStatus(entry.id, 'served')}>Mark served</button> : '—'}</span>
+          <strong>#{entry.queue_number}{entry.id === nextQueueEntryIdByCampaign.get(entry.campaign_id) && <small>Next</small>}</strong><span>{entry.client?.full_name}<small>{entry.client?.phone}</small></span><span>{entry.campaign?.title}</span><span className={`portal-status portal-status-${entry.status}`}>{entry.status}</span>
+          <span>{canManageQueue && entry.status === 'waiting' && entry.id === nextQueueEntryIdByCampaign.get(entry.campaign_id) ? <button className="secondary-button" type="button" disabled={busy} onClick={() => updateStatus(entry.id, 'called')}>Call next</button> : canManageQueue && entry.status === 'called' ? <button className="secondary-button" type="button" disabled={busy} onClick={() => updateStatus(entry.id, 'served')}>Finish &amp; remove</button> : entry.status === 'waiting' ? 'Waiting' : '—'}</span>
         </article>)}
       </div>}
     </section>

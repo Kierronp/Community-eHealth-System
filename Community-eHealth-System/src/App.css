@@ -195,6 +195,37 @@ textarea {
   padding: 34px 0 56px;
 }
 
+.public-client-dashboard {
+  min-height: calc(100vh - 130px);
+}
+
+.public-registration-form {
+  max-width: 620px;
+}
+
+.public-request-button {
+  margin-top: 14px;
+}
+
+.request-status-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #78857d;
+  font-size: 10px;
+}
+
+.request-status-control select {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid #dfe7e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #3d5749;
+  font: inherit;
+  text-transform: capitalize;
+}
+
 .client-sidebar {
   display: flex;
   flex-direction: column;
@@ -619,6 +650,27 @@ textarea {
 }
 
 .portal-status-cancelled {
+  color: #985b59;
+  background: #fff0ef;
+}
+
+.portal-status-requested {
+  color: #895b30;
+  background: #fff8ee;
+}
+
+.portal-status-approved,
+.portal-status-ready {
+  color: #327853;
+  background: #eaf4ed;
+}
+
+.portal-status-fulfilled {
+  color: #526e86;
+  background: #edf4fa;
+}
+
+.portal-status-rejected {
   color: #985b59;
   background: #fff0ef;
 }

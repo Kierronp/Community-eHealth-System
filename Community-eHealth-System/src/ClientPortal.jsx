@@ -1,6 +1,225 @@
 import { useEffect, useState } from 'react'
 import { supabase, supabaseConfigurationError, supabaseConfigured } from './lib/supabase.js'
 
+function PublicClientDashboard({ onStaffLogin }) {
+  const [section, setSection] = useState('dashboard')
+  const [campaigns, setCampaigns] = useState([])
+  const [campaignLoading, setCampaignLoading] = useState(supabaseConfigured)
+  const [campaignError, setCampaignError] = useState('')
+  const [organizations, setOrganizations] = useState([])
+  const [organizationError, setOrganizationError] = useState('')
+  const [selectedCampaign, setSelectedCampaign] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    if (!supabase) return undefined
+    let cancelled = false
+    Promise.all([
+      supabase.from('service_campaigns')
+        .select('id, organization_id, title, service_type, description, starts_at, ends_at')
+        .eq('status', 'open')
+        .or(`ends_at.is.null,ends_at.gte.${new Date().toISOString()}`)
+        .order('starts_at'),
+      supabase.rpc('list_public_organizations'),
+    ]).then(([campaignResult, organizationResult]) => {
+      if (cancelled) return
+      if (campaignResult.error) setCampaignError(`Could not load service announcements: ${campaignResult.error.message}`)
+      else setCampaigns(campaignResult.data ?? [])
+      if (organizationResult.error) setOrganizationError(`Could not load clinic locations: ${organizationResult.error.message}`)
+      else setOrganizations(organizationResult.data ?? [])
+      setCampaignLoading(false)
+    }).catch((loadError) => {
+      if (cancelled) return
+      setCampaignError(`Could not load public clinic information: ${loadError instanceof Error ? loadError.message : 'Unknown database error.'}`)
+      setCampaignLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  async function submitPublicAction(event, action) {
+    event.preventDefault()
+    if (!supabase) return
+    const form = event.currentTarget
+    const values = new FormData(form)
+    const organizationId = String(values.get('organization_id') ?? '')
+    const fullName = String(values.get('full_name') ?? '').trim()
+    const pin = String(values.get('pin') ?? '')
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const body = action === 'register'
+        ? {
+          action,
+          organization_id: organizationId,
+          full_name: fullName,
+          email: String(values.get('email') ?? '').trim(),
+          pin,
+          phone: String(values.get('phone') ?? '').trim(),
+          address: String(values.get('address') ?? '').trim(),
+          birth_date: String(values.get('birth_date') ?? ''),
+          email_notifications: values.get('email_notifications') === 'on',
+        }
+        : {
+          action,
+          organization_id: selectedCampaign.organization_id,
+          campaign_id: selectedCampaign.id,
+          full_name: fullName,
+          pin,
+        }
+      const { data, error: invokeError } = await supabase.functions.invoke('public-client-portal', { body })
+      if (invokeError) {
+        if (invokeError.context instanceof Response) {
+          const responseData = await invokeError.context.json().catch(() => null)
+          if (typeof responseData?.error === 'string') throw new Error(responseData.error)
+        }
+        throw invokeError
+      }
+      if (data?.error) throw new Error(data.error)
+      if (action === 'register') {
+        form.reset()
+        setNotice('Your client account is registered. Use this exact full name and four-digit PIN when joining a service.')
+        setSection('dashboard')
+      } else {
+        setNotice(data?.already_joined
+          ? `You are already in this service queue as number ${data?.queue_number}.`
+          : `You joined the service. Your queue number is ${data?.queue_number}.`)
+        setSection('services')
+        setSelectedCampaign(null)
+      }
+    } catch (actionError) {
+      const task = action === 'register' ? 'register your account' : 'join the service'
+      setError(`Could not ${task}: ${actionError instanceof Error ? actionError.message : 'Unknown service error.'}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const navigation = [
+    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'services', label: 'Services' },
+    { id: 'register', label: 'Register account' },
+  ]
+  const title = navigation.find((item) => item.id === section)?.label ?? 'Join a service'
+
+  return <main className="portal-page">
+    <header className="portal-header">
+      <a className="portal-brand" href="#" onClick={(event) => { event.preventDefault(); setSection('dashboard') }}>
+        <span className="brand-mark">+</span><span>CareCircle <small>COMMUNITY HEALTH</small></span>
+      </a>
+      <button className="portal-text-button" type="button" onClick={() => onStaffLogin ? setSection('staff') : undefined}>Admin login</button>
+    </header>
+    {!supabaseConfigured && <section className="portal-setup-warning" role="alert">Service requests and announcements are unavailable: {supabaseConfigurationError}</section>}
+    <div className="client-dashboard public-client-dashboard">
+      <aside className="client-sidebar">
+        <div className="client-sidebar-label">CLIENT MENU</div>
+        <nav aria-label="Client navigation">
+          {navigation.map((item) => <button key={item.id} type="button" className={`client-nav-item${section === item.id ? ' client-nav-active' : ''}`} onClick={() => { setSection(item.id); setError(''); setNotice('') }}>{item.label}</button>)}
+        </nav>
+        <div className="client-sidebar-help"><strong>Welcome</strong><p>Browse available services without signing in. Register once, then enter your registered name and PIN to join a service.</p></div>
+      </aside>
+      <div className="client-dashboard-main">
+        {section === 'staff' ? <section className="portal-auth-card">
+          <button className="portal-back-link" type="button" onClick={() => setSection('dashboard')}>← Back to client dashboard</button>
+          <div className="eyebrow">STAFF WORKSPACE</div><h1>Staff sign in</h1>
+          <p className="auth-description">Staff accounts are created by an administrator. Use your organization email and password.</p>
+          <StaffLoginForm onStaffLogin={onStaffLogin} />
+        </section> : <>
+          <section className="portal-welcome client-dashboard-welcome">
+            <div className="eyebrow">PUBLIC CLIENT DASHBOARD</div>
+            <h1>{section === 'dashboard' ? 'Health services, closer to home.' : title}</h1>
+            <p>{section === 'dashboard' ? 'Find local checkups and medicine services. Browse freely, register your client record, and use your registered details when joining a service.' : 'Browse available community health services and join the ones you need.'}</p>
+          </section>
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          {organizationError && <p className="auth-error" role="alert">{organizationError}</p>}
+          {notice && <p className="portal-success" role="status">{notice}</p>}
+          {section === 'dashboard' && <>
+            <section className="client-stat-grid" aria-label="Public dashboard">
+              <article className="client-stat-card"><span>Open services</span><strong>{campaignLoading ? '—' : campaigns.length}</strong><button type="button" onClick={() => setSection('services')}>Browse services</button></article>
+              <article className="client-stat-card"><span>Client record</span><strong>Optional</strong><button type="button" onClick={() => setSection('register')}>Register account</button></article>
+            </section>
+            <section className="portal-section client-dashboard-section">
+              <div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Upcoming services</h2></div><button className="portal-text-button" type="button" onClick={() => setSection('services')}>View all</button></div>
+              <PublicCampaignList campaigns={campaigns.slice(0, 3)} organizations={organizations} loading={campaignLoading} error={campaignError} onJoin={(campaign) => { setSelectedCampaign(campaign); setSection('join') }} />
+            </section>
+          </>}
+          {section === 'services' && <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Available services</h2></div></div><PublicCampaignList campaigns={campaigns} organizations={organizations} loading={campaignLoading} error={campaignError} onJoin={(campaign) => { setSelectedCampaign(campaign); setSection('join') }} /></section>}
+          {section === 'register' && <section className="portal-section client-dashboard-section">
+            <p>Register your details once so the clinic can keep your client record. When you join a service later, enter the same registered full name and four-digit PIN to verify your account.</p>
+            <form className="auth-form portal-form public-registration-form" onSubmit={(event) => submitPublicAction(event, 'register')}>
+              <label>Clinic or organization<select name="organization_id" required defaultValue=""><option value="" disabled>Select your clinic</option>{organizations.map((organization) => <option key={organization.organization_id} value={organization.organization_id}>{organization.organization_name}</option>)}</select></label>
+              <label>Full name<input name="full_name" required minLength="2" maxLength="120" autoComplete="name" /></label>
+              <label>Email address<input name="email" type="email" required maxLength="254" autoComplete="email" /></label>
+              <label>Choose a 4-digit clinic PIN<input name="pin" required inputMode="numeric" pattern="[0-9]{4}" maxLength="4" autoComplete="new-password" /></label>
+              <small className="portal-muted">Use this same name and PIN to verify your identity when joining services.</small>
+              <label>Phone number<input name="phone" required minLength="5" maxLength="40" autoComplete="tel" /></label>
+              <label>Home address<textarea name="address" required minLength="2" maxLength="240" autoComplete="street-address" /></label>
+              <label>Date of birth<input name="birth_date" type="date" required /></label>
+              <label className="portal-checkbox"><input name="email_notifications" type="checkbox" /> Email me general community-service announcements (optional).</label>
+              <button className="primary-button" type="submit" disabled={busy || !supabaseConfigured || !organizations.length}>{busy ? 'Registering…' : 'Register client account'}</button>
+            </form>
+          </section>}
+          {section === 'join' && selectedCampaign && <section className="portal-section client-dashboard-section">
+            <button className="portal-back-link" type="button" onClick={() => { setSelectedCampaign(null); setSection('services') }}>← Back to services</button>
+            <h2>{selectedCampaign.title}</h2><p>{selectedCampaign.description || 'Community health service'}</p>
+            <p>Enter your registered full name and four-digit PIN to verify your client record and join this service queue. You will receive a queue number in the order you join. If you do not have an account yet, register first using the sidebar.</p>
+            <form className="auth-form portal-form public-registration-form" onSubmit={(event) => submitPublicAction(event, 'join')}>
+              <label>Registered full name<input name="full_name" required autoComplete="name" /></label>
+              <label>4-digit clinic PIN<input name="pin" required inputMode="numeric" pattern="[0-9]{4}" maxLength="4" autoComplete="off" /></label>
+              <p className="portal-muted">Joining assigns your place in line automatically. Keep your queue number for when the clinic calls you.</p>
+              <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Joining…' : 'Join service'}</button>
+            </form>
+          </section>}
+        </>}
+      </div>
+    </div>
+    <footer className="portal-footer">CareCircle · Community health services</footer>
+  </main>
+}
+
+function PublicCampaignList({ campaigns, organizations, loading, error, onJoin }) {
+  if (loading) return <p className="portal-muted">Loading community services…</p>
+  if (error) return <p className="auth-error" role="alert">{error}</p>
+  if (!campaigns.length) return <p className="portal-muted">There are no open service announcements right now. Check back for upcoming clinic services.</p>
+  return <div className="portal-campaign-grid">{campaigns.map((campaign) => {
+    const organization = organizations.find((item) => item.organization_id === campaign.organization_id)
+    return <article className="portal-campaign-card" key={campaign.id}>
+      <span className="portal-tag">{campaign.service_type.replace('_', ' ')}</span>
+      <h3>{campaign.title}</h3>
+      <p>{campaign.description || 'Community health service available to the community.'}</p>
+      <small>{organization?.organization_name ?? 'Community clinic'} · {new Date(campaign.starts_at).toLocaleString()}</small>
+      <button className="secondary-button public-request-button" type="button" onClick={() => onJoin(campaign)}>Join service</button>
+    </article>
+  })}</div>
+}
+
+function StaffLoginForm({ onStaffLogin }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  async function submit(event) {
+    event.preventDefault()
+    if (!onStaffLogin) return
+    setBusy(true)
+    setError('')
+    try {
+      await onStaffLogin(email.trim(), password)
+    } catch (signInError) {
+      setError(`Staff sign-in failed: ${signInError instanceof Error ? signInError.message : 'Unknown authentication error.'}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <>{error && <p className="auth-error" role="alert">{error}</p>}<form className="auth-form" onSubmit={submit}>
+    <label>Email address<input type="email" required autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+    <label>Password<input type="password" required autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+    <button className="primary-button" type="submit" disabled={busy || !supabaseConfigured}>{busy ? 'Signing in…' : 'Sign in to staff workspace'}</button>
+  </form></>
+}
+
 function CampaignList({ campaigns, loading, error }) {
   if (loading) return <p className="portal-muted">Loading community services…</p>
   if (error) return <p className="auth-error" role="alert">{error}</p>
@@ -18,16 +237,23 @@ function CampaignList({ campaigns, loading, error }) {
 }
 
 function ClientQueue({ entries, loading, error }) {
-  if (loading) return <p className="portal-muted">Loading your requests…</p>
+  if (loading) return <p className="portal-muted">Loading your clinic visits…</p>
   if (error) return <p className="auth-error" role="alert">{error}</p>
-  if (!entries.length) return <p className="portal-muted">No clinic requests yet. Clinic staff will add your queue information here when you check in for a service.</p>
+  if (!entries.length) return <p className="portal-muted">No clinic visits yet. Joining a service automatically assigns your queue number.</p>
   return <div className="portal-queue-list">{entries.map((entry) => <article className="portal-queue-card" key={entry.id}>
     <div><span className="eyebrow">{entry.campaign?.title ?? 'Clinic service'}</span><strong>Queue #{entry.queue_number}</strong><small>{entry.campaign?.starts_at ? new Date(entry.campaign.starts_at).toLocaleString() : ''}</small></div>
     <span className={`portal-status portal-status-${entry.status}`}>{entry.status}</span>
   </article>)}</div>
 }
 
-export default function ClientPortal({ mode = 'public', profile, onProfileCreated, onNotificationChange, onStaffLogin, onClientAuthStart, onSignOut, initialAuthError = '' }) {
+export default function ClientPortal(props) {
+  if (props.mode !== 'client' && props.mode !== 'client-setup') {
+    return <PublicClientDashboard onStaffLogin={props.onStaffLogin} />
+  }
+  return <AuthenticatedClientPortal {...props} />
+}
+
+function AuthenticatedClientPortal({ mode = 'public', profile, onProfileCreated, onNotificationChange, onStaffLogin, onClientAuthStart, onSignOut, initialAuthError = '' }) {
   const [section, setSection] = useState('home')
   const [clientTab, setClientTab] = useState('dashboard')
   const [campaigns, setCampaigns] = useState([])
@@ -189,11 +415,9 @@ export default function ClientPortal({ mode = 'public', profile, onProfileCreate
 
   const setupMode = mode === 'client-setup'
   const clientMode = mode === 'client'
-  const activeQueueCount = queueEntries.filter((entry) => ['waiting', 'called'].includes(entry.status)).length
   const clientNavigation = [
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'services', label: 'Available services' },
-    { id: 'requests', label: 'My requests' },
     { id: 'profile', label: 'My profile' },
   ]
 
@@ -229,11 +453,10 @@ export default function ClientPortal({ mode = 'public', profile, onProfileCreate
         {clientTab === 'dashboard' && <>
           <section className="client-stat-grid" aria-label="Client dashboard summary">
             <article className="client-stat-card"><span>Open services</span><strong>{campaignLoading ? '—' : campaigns.length}</strong><button type="button" onClick={() => setClientTab('services')}>Browse services</button></article>
-            <article className="client-stat-card"><span>Active clinic requests</span><strong>{queueLoading ? '—' : activeQueueCount}</strong><button type="button" onClick={() => setClientTab('requests')}>View requests</button></article>
-            <article className="client-stat-card"><span>Clinic visits</span><strong>{queueLoading ? '—' : queueEntries.length}</strong><button type="button" onClick={() => setClientTab('requests')}>View visit history</button></article>
+            <article className="client-stat-card"><span>Clinic visits</span><strong>{queueLoading ? '—' : queueEntries.length}</strong></article>
           </section>
           <section className="portal-section client-dashboard-section">
-            <div className="portal-section-heading"><div><div className="eyebrow">YOUR CLINIC STATUS</div><h2>Recent requests</h2></div><button className="portal-text-button" type="button" onClick={() => setClientTab('requests')}>View all</button></div>
+            <div className="portal-section-heading"><div><div className="eyebrow">YOUR CLINIC STATUS</div><h2>Recent visits</h2></div></div>
             <ClientQueue entries={queueEntries.slice(0, 3)} loading={queueLoading} error={queueError} />
           </section>
           <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Available services</h2></div><button className="portal-text-button" type="button" onClick={() => setClientTab('services')}>View all</button></div>
@@ -242,8 +465,6 @@ export default function ClientPortal({ mode = 'public', profile, onProfileCreate
         </>}
 
         {clientTab === 'services' && <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Available services</h2></div></div><CampaignList campaigns={campaigns} loading={campaignLoading} error={campaignError} /><p className="portal-muted">To request or attend a service, contact your clinic. Clinic staff will verify your details and add you to the queue when you arrive.</p></section>}
-
-        {clientTab === 'requests' && <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">CLINIC VISITS</div><h2>My requests and queue status</h2></div></div><ClientQueue entries={queueEntries} loading={queueLoading} error={queueError} /><p className="portal-muted">Requests and queue entries are managed by clinic staff. Your queue number will appear here after staff check you in.</p></section>}
 
         {clientTab === 'profile' && <section className="portal-section client-dashboard-section"><div className="portal-section-heading"><div><div className="eyebrow">YOUR INFORMATION</div><h2>Registered profile</h2></div></div>
           <dl className="client-profile-grid"><div><dt>Full name</dt><dd>{profile?.full_name || '—'}</dd></div><div><dt>Email address</dt><dd>{profile?.email || '—'}</dd></div><div><dt>Phone number</dt><dd>{profile?.phone || '—'}</dd></div><div><dt>Date of birth</dt><dd>{profile?.birth_date ? new Date(`${profile.birth_date}T00:00:00`).toLocaleDateString() : '—'}</dd></div><div className="client-profile-address"><dt>Home address</dt><dd>{profile?.address || '—'}</dd></div></dl>
@@ -273,7 +494,7 @@ export default function ClientPortal({ mode = 'public', profile, onProfileCreate
           <div className="eyebrow">CARE FOR EVERY COMMUNITY</div>
           <h1>Health services, closer to home.</h1>
           <p>Register with your community clinic to keep your contact details together and receive updates about checkups, medicine, vaccines, and other local health services.</p>
-          <div className="portal-actions"><button className="primary-button" type="button" onClick={() => { setSection('client'); setAuthError(''); setAuthNotice('') }}>Register or sign in</button><button className="portal-secondary-button" type="button" onClick={() => { setSection('client'); setAuthError(''); setAuthNotice('') }}>View my requests</button></div>
+          <div className="portal-actions"><button className="primary-button" type="button" onClick={() => { setSection('client'); setAuthError(''); setAuthNotice('') }}>Register or sign in</button></div>
         </section>
         <section className="portal-section"><div className="portal-section-heading"><div><div className="eyebrow">COMMUNITY HEALTH</div><h2>Open services</h2></div></div><CampaignList campaigns={campaigns} loading={campaignLoading} error={campaignError} /></section>
         <p className="portal-privacy">Your health information is private. Staff verify clinic visits in person; your 4-digit clinic PIN is never used to sign in online.</p>
