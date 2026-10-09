@@ -12,7 +12,22 @@ $$;
 
 begin;
 
-create extension if not exists pgcrypto;
+create schema if not exists extensions;
+do $$
+declare
+  extension_schema text;
+begin
+  select n.nspname into extension_schema
+  from pg_extension e
+  join pg_namespace n on n.oid = e.extnamespace
+  where e.extname = 'pgcrypto';
+  if extension_schema is null then
+    execute 'create extension pgcrypto with schema extensions';
+  elsif extension_schema <> 'extensions' then
+    execute 'alter extension pgcrypto set schema extensions';
+  end if;
+end;
+$$;
 
 create table if not exists public.organizations (
   id uuid primary key default gen_random_uuid(),
@@ -333,6 +348,68 @@ create table if not exists public.audit_logs (
   occurred_at timestamptz not null default now()
 );
 
+create table if not exists public.client_profiles (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null unique references auth.users(id) on delete cascade,
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  full_name text not null check (char_length(trim(full_name)) between 2 and 120),
+  email text not null,
+  pin_hash text not null,
+  phone text not null check (char_length(trim(phone)) between 5 and 40),
+  address text not null check (char_length(trim(address)) between 2 and 240),
+  birth_date date not null,
+  email_notifications boolean not null default false,
+  status text not null default 'active' check (status in ('active', 'inactive')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (organization_id, id)
+);
+alter table public.client_profiles alter column email_notifications set default false;
+
+create table if not exists public.service_campaigns (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  title text not null check (char_length(trim(title)) between 2 and 160),
+  service_type text not null check (service_type in ('checkup', 'medicine', 'vaccination', 'other')),
+  description text not null default '',
+  facility_id uuid,
+  starts_at timestamptz not null,
+  ends_at timestamptz,
+  status text not null default 'draft' check (status in ('draft', 'open', 'closed')),
+  announced_at timestamptz,
+  next_queue_number integer not null default 1 check (next_queue_number > 0),
+  created_by uuid not null default auth.uid(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (organization_id, id),
+  foreign key (organization_id, facility_id)
+    references public.facilities(organization_id, id) on delete restrict,
+  foreign key (organization_id, created_by)
+    references public.organization_memberships(organization_id, user_id),
+  check (ends_at is null or ends_at >= starts_at)
+);
+
+create table if not exists public.queue_entries (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  campaign_id uuid not null,
+  client_profile_id uuid not null,
+  queue_number integer not null check (queue_number > 0),
+  status text not null default 'waiting' check (status in ('waiting', 'called', 'served', 'cancelled')),
+  checked_in_at timestamptz not null default now(),
+  called_at timestamptz,
+  completed_at timestamptz,
+  created_by uuid not null default auth.uid(),
+  unique (campaign_id, queue_number),
+  unique (campaign_id, client_profile_id),
+  foreign key (organization_id, campaign_id)
+    references public.service_campaigns(organization_id, id) on delete cascade,
+  foreign key (organization_id, client_profile_id)
+    references public.client_profiles(organization_id, id) on delete restrict,
+  foreign key (organization_id, created_by)
+    references public.organization_memberships(organization_id, user_id)
+);
+
 create index if not exists memberships_user_status_idx on public.organization_memberships(user_id, status);
 create index if not exists facilities_org_active_idx on public.facilities(organization_id, is_active);
 create index if not exists communities_org_active_idx on public.communities(organization_id, is_active);
@@ -346,6 +423,10 @@ create index if not exists referrals_org_status_idx on public.referrals(organiza
 create index if not exists alerts_org_status_due_idx on public.alerts(organization_id, status, due_at);
 create index if not exists reports_org_created_idx on public.report_runs(organization_id, created_at desc);
 create index if not exists audit_org_time_idx on public.audit_logs(organization_id, occurred_at desc);
+create index if not exists client_profiles_org_name_idx on public.client_profiles(organization_id, full_name);
+create index if not exists campaigns_org_status_start_idx on public.service_campaigns(organization_id, status, starts_at);
+create index if not exists queue_entries_org_campaign_status_idx on public.queue_entries(organization_id, campaign_id, status, queue_number);
+create index if not exists queue_entries_client_idx on public.queue_entries(client_profile_id, checked_in_at desc);
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -364,7 +445,8 @@ declare
 begin
   foreach table_to_timestamp in array array[
     'profiles', 'families', 'patients', 'vaccination_records',
-    'inventory_items', 'referrals', 'alerts'
+    'inventory_items', 'referrals', 'alerts', 'client_profiles',
+    'service_campaigns'
   ]
   loop
     execute format('drop trigger if exists set_updated_at on public.%I', table_to_timestamp);
@@ -421,6 +503,196 @@ as $$
   join public.organizations o on o.id = m.organization_id
   where m.user_id = (select auth.uid()) and m.status = 'active'
   order by o.name;
+$$;
+
+create or replace function public.list_public_organizations()
+returns table (organization_id uuid, organization_name text)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select o.id, o.name
+  from public.organizations o
+  order by o.name;
+$$;
+
+drop function if exists public.register_client_profile(uuid, text, text, text, text, date);
+create or replace function public.register_client_profile(
+  p_organization_id uuid,
+  p_full_name text,
+  p_pin text,
+  p_phone text,
+  p_address text,
+  p_birth_date date,
+  p_email_notifications boolean
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  new_profile_id uuid;
+  verified_email text;
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in with your verified email before completing registration.' using errcode = '42501';
+  end if;
+  select u.email into verified_email
+  from auth.users u
+  where u.id = auth.uid() and u.email_confirmed_at is not null;
+  if verified_email is null then
+    raise exception 'Verify your email before completing registration.' using errcode = '42501';
+  end if;
+  if p_pin !~ '^[0-9]{4}$' then
+    raise exception 'PIN must contain exactly four digits.' using errcode = '22023';
+  end if;
+  if char_length(trim(p_full_name)) not between 2 and 120
+    or char_length(trim(p_phone)) not between 5 and 40
+    or char_length(trim(p_address)) not between 2 and 240
+    or p_birth_date is null
+    or p_birth_date > current_date then
+    raise exception 'Enter a valid name, phone, address, and birth date.' using errcode = '22023';
+  end if;
+  if not exists (select 1 from public.organizations o where o.id = p_organization_id) then
+    raise exception 'Select a valid organization.' using errcode = '22023';
+  end if;
+
+  insert into public.client_profiles (
+    user_id, organization_id, full_name, email, pin_hash, phone, address, birth_date, email_notifications
+  ) values (
+    auth.uid(), p_organization_id, trim(p_full_name), verified_email,
+    extensions.crypt(p_pin, extensions.gen_salt('bf')), trim(p_phone), trim(p_address), p_birth_date,
+    coalesce(p_email_notifications, false)
+  )
+  returning id into new_profile_id;
+  return new_profile_id;
+end;
+$$;
+
+create or replace function public.set_client_email_notifications(p_enabled boolean)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in to change your email preference.' using errcode = '42501';
+  end if;
+  update public.client_profiles
+  set email_notifications = coalesce(p_enabled, false)
+  where user_id = auth.uid() and status = 'active';
+  if not found then
+    raise exception 'No active client profile was found for this account.' using errcode = '42501';
+  end if;
+end;
+$$;
+
+create or replace function public.check_in_client(
+  p_campaign_id uuid,
+  p_full_name text,
+  p_pin text
+)
+returns table (entry_id uuid, assigned_queue_number integer)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target_organization_id uuid;
+  target_client_id uuid;
+  target_campaign_status text;
+  allocated_number integer;
+  matching_client_count integer;
+begin
+  select c.organization_id, c.status
+  into target_organization_id, target_campaign_status
+  from public.service_campaigns c
+  where c.id = p_campaign_id;
+
+  if target_organization_id is null
+    or not public.has_org_role(target_organization_id, array['owner', 'admin', 'clinician', 'health_worker']) then
+    raise exception 'You do not have permission to check clients into this service.' using errcode = '42501';
+  end if;
+
+  select c.status into target_campaign_status
+  from public.service_campaigns c
+  where c.id = p_campaign_id
+  for update;
+  if target_campaign_status is distinct from 'open' then
+    raise exception 'This service is not currently accepting check-ins.' using errcode = '22023';
+  end if;
+  if p_pin !~ '^[0-9]{4}$' then
+    raise exception 'Could not verify this client. Check the full name and PIN.' using errcode = '22023';
+  end if;
+
+  select count(*) into matching_client_count
+  from public.client_profiles cp
+  where cp.organization_id = target_organization_id
+    and cp.status = 'active'
+    and lower(trim(cp.full_name)) = lower(trim(p_full_name))
+    and cp.pin_hash = extensions.crypt(p_pin, cp.pin_hash);
+
+  if matching_client_count <> 1 then
+    raise exception 'Could not verify this client. Check the full name and PIN.' using errcode = '22023';
+  end if;
+  select cp.id into target_client_id
+  from public.client_profiles cp
+  where cp.organization_id = target_organization_id
+    and cp.status = 'active'
+    and lower(trim(cp.full_name)) = lower(trim(p_full_name))
+    and cp.pin_hash = extensions.crypt(p_pin, cp.pin_hash);
+
+  select qe.id, qe.queue_number into entry_id, assigned_queue_number
+  from public.queue_entries qe
+  where qe.campaign_id = p_campaign_id and qe.client_profile_id = target_client_id;
+  if entry_id is not null then
+    return next;
+    return;
+  end if;
+
+  update public.service_campaigns c
+  set next_queue_number = c.next_queue_number + 1
+  where c.id = p_campaign_id
+  returning c.next_queue_number - 1 into allocated_number;
+
+  insert into public.queue_entries (
+    organization_id, campaign_id, client_profile_id, queue_number
+  ) values (
+    target_organization_id, p_campaign_id, target_client_id, allocated_number
+  )
+  returning id into entry_id;
+  assigned_queue_number := allocated_number;
+  return next;
+end;
+$$;
+
+create or replace function public.update_queue_entry_status(p_entry_id uuid, p_status text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target_organization_id uuid;
+begin
+  if p_status not in ('waiting', 'called', 'served', 'cancelled') then
+    raise exception 'Invalid queue status.' using errcode = '22023';
+  end if;
+  select qe.organization_id into target_organization_id
+  from public.queue_entries qe where qe.id = p_entry_id;
+  if target_organization_id is null
+    or not public.has_org_role(target_organization_id, array['owner', 'admin', 'clinician', 'health_worker']) then
+    raise exception 'You do not have permission to manage this queue.' using errcode = '42501';
+  end if;
+  update public.queue_entries qe
+  set status = p_status,
+      called_at = case when p_status = 'called' then now() else qe.called_at end,
+      completed_at = case when p_status in ('served', 'cancelled') then now() else null end
+  where qe.id = p_entry_id;
+end;
 $$;
 
 create or replace function public.create_my_organization(p_name text)
@@ -508,7 +780,8 @@ begin
     'facilities', 'communities', 'families', 'patients', 'family_members',
     'patient_visits', 'patient_programs', 'vaccination_records',
     'inventory_items', 'inventory_lots', 'inventory_movements', 'referrals',
-    'qr_ids', 'alerts', 'report_runs'
+    'qr_ids', 'alerts', 'report_runs', 'client_profiles',
+    'service_campaigns', 'queue_entries'
   ]
   loop
     execute format('drop trigger if exists audit_row_change on public.%I', table_to_audit);
@@ -523,14 +796,34 @@ $$;
 revoke all on function public.is_org_member(uuid) from public, anon;
 revoke all on function public.has_org_role(uuid, text[]) from public, anon;
 revoke all on function public.my_organizations() from public, anon;
-revoke all on function public.create_my_organization(text) from public, anon;
+revoke all on function public.create_my_organization(text) from public, anon, authenticated;
+revoke all on function public.list_public_organizations() from public;
+revoke all on function public.register_client_profile(uuid, text, text, text, text, date, boolean) from public, anon;
+revoke all on function public.set_client_email_notifications(boolean) from public, anon;
+revoke all on function public.check_in_client(uuid, text, text) from public, anon;
+revoke all on function public.update_queue_entry_status(uuid, text) from public, anon;
+grant execute on function public.list_public_organizations() to anon, authenticated;
+grant execute on function public.register_client_profile(uuid, text, text, text, text, date, boolean) to authenticated;
+grant execute on function public.set_client_email_notifications(boolean) to authenticated;
+grant execute on function public.check_in_client(uuid, text, text) to authenticated;
+grant execute on function public.update_queue_entry_status(uuid, text) to authenticated;
 grant execute on function public.is_org_member(uuid) to authenticated;
 grant execute on function public.has_org_role(uuid, text[]) to authenticated;
 grant execute on function public.my_organizations() to authenticated;
-grant execute on function public.create_my_organization(text) to authenticated;
 
 revoke all on all tables in schema public from anon, authenticated;
 grant select on public.organizations, public.organization_memberships, public.profiles to authenticated;
+grant select on public.service_campaigns to anon, authenticated;
+revoke all on public.service_campaigns from anon;
+grant select (id, title, service_type, description, starts_at, ends_at, status)
+  on public.service_campaigns to anon;
+grant select (
+  id, user_id, organization_id, full_name, email, phone, address, birth_date,
+  email_notifications, status, created_at, updated_at
+) on public.client_profiles to authenticated;
+grant update(status) on public.client_profiles to authenticated;
+grant select, insert, update, delete on public.service_campaigns to authenticated;
+grant select, update on public.queue_entries to authenticated;
 grant select, insert, update, delete on
   public.facilities,
   public.communities,
@@ -569,6 +862,9 @@ alter table public.qr_ids enable row level security;
 alter table public.alerts enable row level security;
 alter table public.report_runs enable row level security;
 alter table public.audit_logs enable row level security;
+alter table public.client_profiles enable row level security;
+alter table public.service_campaigns enable row level security;
+alter table public.queue_entries enable row level security;
 
 drop policy if exists organization_member_read on public.organizations;
 create policy organization_member_read on public.organizations
@@ -585,6 +881,42 @@ create policy profile_self_read on public.profiles
 drop policy if exists profile_self_update on public.profiles;
 create policy profile_self_update on public.profiles
   for update to authenticated using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+
+drop policy if exists client_profile_self_or_staff_read on public.client_profiles;
+create policy client_profile_self_or_staff_read on public.client_profiles
+  for select to authenticated
+  using (user_id = (select auth.uid()) or public.is_org_member(organization_id));
+drop policy if exists client_profile_staff_update on public.client_profiles;
+create policy client_profile_staff_update on public.client_profiles
+  for update to authenticated
+  using (public.has_org_role(organization_id, array['owner', 'admin']))
+  with check (public.has_org_role(organization_id, array['owner', 'admin']));
+
+drop policy if exists open_campaign_public_read on public.service_campaigns;
+create policy open_campaign_public_read on public.service_campaigns
+  for select to anon, authenticated using (status = 'open');
+drop policy if exists client_campaign_history_read on public.service_campaigns;
+create policy client_campaign_history_read on public.service_campaigns
+  for select to authenticated using (exists (
+    select 1 from public.queue_entries qe
+    join public.client_profiles cp on cp.id = qe.client_profile_id
+    where qe.campaign_id = service_campaigns.id and cp.user_id = (select auth.uid())
+  ));
+drop policy if exists client_queue_self_read on public.queue_entries;
+create policy client_queue_self_read on public.queue_entries
+  for select to authenticated
+  using (exists (
+    select 1 from public.client_profiles cp
+    where cp.id = client_profile_id and cp.user_id = (select auth.uid())
+  ));
+drop policy if exists queue_staff_org_read on public.queue_entries;
+create policy queue_staff_org_read on public.queue_entries
+  for select to authenticated using (public.is_org_member(organization_id));
+drop policy if exists queue_staff_update on public.queue_entries;
+create policy queue_staff_update on public.queue_entries
+  for update to authenticated
+  using (public.has_org_role(organization_id, array['owner', 'admin', 'clinician', 'health_worker']))
+  with check (public.has_org_role(organization_id, array['owner', 'admin', 'clinician', 'health_worker']));
 
 do $$
 declare
@@ -647,6 +979,40 @@ begin
       table_name
     );
   end loop;
+end;
+$$;
+
+drop policy if exists org_member_select on public.service_campaigns;
+drop policy if exists org_staff_insert on public.service_campaigns;
+drop policy if exists org_staff_update on public.service_campaigns;
+drop policy if exists org_admin_delete on public.service_campaigns;
+drop policy if exists service_campaign_staff_read on public.service_campaigns;
+create policy service_campaign_staff_read on public.service_campaigns
+  for select to authenticated using (public.is_org_member(organization_id));
+drop policy if exists service_campaign_staff_insert on public.service_campaigns;
+create policy service_campaign_staff_insert on public.service_campaigns
+  for insert to authenticated
+  with check (public.has_org_role(organization_id, array['owner', 'admin', 'clinician']));
+drop policy if exists service_campaign_staff_update on public.service_campaigns;
+create policy service_campaign_staff_update on public.service_campaigns
+  for update to authenticated
+  using (public.has_org_role(organization_id, array['owner', 'admin', 'clinician']))
+  with check (public.has_org_role(organization_id, array['owner', 'admin', 'clinician']));
+drop policy if exists service_campaign_admin_delete on public.service_campaigns;
+create policy service_campaign_admin_delete on public.service_campaigns
+  for delete to authenticated using (public.has_org_role(organization_id, array['owner', 'admin']));
+
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+    and not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = 'queue_entries'
+    ) then
+    alter publication supabase_realtime add table public.queue_entries;
+  end if;
 end;
 $$;
 

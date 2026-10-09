@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import ClientPortal from './ClientPortal.jsx'
 import { supabase, supabaseConfigurationError, supabaseConfigured } from './lib/supabase.js'
 import './App.css'
+
+const ServicesWorkspace = lazy(() => import('./ServicesWorkspace.jsx'))
 
 const navigation = [
   { label: 'Dashboard', icon: 'grid' },
@@ -13,6 +16,7 @@ const navigation = [
   { label: 'Referrals', icon: 'arrow' },
   { label: 'Reports', icon: 'chart' },
   { label: 'Alerts', icon: 'bell' },
+  { label: 'Services & Queue', icon: 'calendar' },
   { label: 'Users', icon: 'user' },
 ]
 
@@ -23,6 +27,7 @@ function patientFromRow(row) {
   return {
     name: row.full_name,
     id: row.patient_number,
+    databaseId: row.id,
     age: age ?? '—',
     sex: row.sex ? row.sex[0].toUpperCase() + row.sex.slice(1) : '—',
     community: row.community?.name ?? '—',
@@ -36,7 +41,7 @@ function patientFromRow(row) {
 const workspaceConfig = {
   Families: {
     table: 'families',
-    select: 'id, household_name, family_number, status, created_at, community:communities(name)',
+    select: 'id, household_name, family_number, community_id, status, created_at, community:communities(name)',
     eyebrow: 'COMMUNITY CARE',
     description: 'Households and their linked patient records.',
     columns: ['Family', 'Family ID', 'Community', 'Status'],
@@ -57,7 +62,7 @@ const workspaceConfig = {
   },
   Vaccination: {
     table: 'vaccination_records',
-    select: 'id, vaccine_name, dose_name, due_date, status, patient:patients(full_name)',
+    select: 'id, vaccine_name, dose_name, due_date, status, patient_id, patient:patients(full_name)',
     eyebrow: 'IMMUNIZATION',
     description: 'Track vaccination schedules and administered doses.',
     columns: ['Patient', 'Vaccine', 'Dose', 'Due date', 'Status'],
@@ -86,7 +91,7 @@ const workspaceConfig = {
   },
   Referrals: {
     table: 'referrals',
-    select: 'id, reason, priority, referred_at, follow_up_due, status, patient:patients(full_name)',
+    select: 'id, reason, priority, referred_at, follow_up_due, status, patient_id, patient:patients(full_name)',
     eyebrow: 'CARE COORDINATION',
     description: 'Coordinate patient referrals to facilities.',
     columns: ['Patient', 'Reason', 'Priority', 'Referred on', 'Follow-up', 'Status'],
@@ -194,7 +199,9 @@ function App() {
   const [chatInput, setChatInput] = useState('')
   const [messages, setMessages] = useState([{ from: 'assistant', text: 'I can help you navigate the workspaces. Choose a section from the sidebar to get started.' }])
   const [patientModal, setPatientModal] = useState(false)
+  const [patientEditingRecord, setPatientEditingRecord] = useState(null)
   const [recordModal, setRecordModal] = useState(false)
+  const [editingRecord, setEditingRecord] = useState(null)
   const [workspaceData, setWorkspaceData] = useState({})
   const [isSavingRecord, setIsSavingRecord] = useState(false)
   const [recordError, setRecordError] = useState('')
@@ -202,13 +209,12 @@ function App() {
   const [databaseMessage, setDatabaseMessage] = useState(supabaseConfigurationError)
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(supabaseConfigured)
-  const [authEmail, setAuthEmail] = useState('')
-  const [authPassword, setAuthPassword] = useState('')
-  const [authError, setAuthError] = useState('')
-  const [authBusy, setAuthBusy] = useState(false)
+  const [, setAuthError] = useState('')
+  const [authMode, setAuthMode] = useState(() => new URLSearchParams(window.location.search).get('portal') === 'client' ? 'client' : 'staff')
+  const [accountType, setAccountType] = useState('unknown')
+  const [clientProfile, setClientProfile] = useState(null)
   const [organizations, setOrganizations] = useState([])
   const [organizationId, setOrganizationId] = useState('')
-  const [organizationName, setOrganizationName] = useState('')
   const [communities, setCommunities] = useState([])
   const [facilities, setFacilities] = useState([])
   const [toast, setToast] = useState('')
@@ -281,6 +287,8 @@ function App() {
       setAuthLoading(false)
       setAuthError('')
       if (!nextSession) {
+        setAccountType('unknown')
+        setClientProfile(null)
         setOrganizations([])
         setOrganizationId('')
         setCommunities([])
@@ -296,10 +304,10 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!supabaseConfigured || !supabase || authLoading) return undefined
-    if (!session) return undefined
+    if (!supabaseConfigured || !supabase || authLoading || !session) return undefined
     let cancelled = false
-    supabase.rpc('my_organizations').then(({ data, error }) => {
+    async function identifyAccount() {
+      const { data, error } = await supabase.rpc('my_organizations')
       if (cancelled) return
       if (error) {
         setDatabaseStatus('error')
@@ -307,16 +315,39 @@ function App() {
         return
       }
       const rows = data ?? []
+      if (authMode === 'client') {
+        if (rows.length) {
+          setAccountType('client-blocked')
+          setDatabaseStatus('authentication-required')
+          return
+        }
+        const { data: profile, error: profileError } = await supabase.from('client_profiles')
+          .select('id, full_name, email, phone, address, birth_date, email_notifications, status')
+          .maybeSingle()
+        if (cancelled) return
+        if (profileError) {
+          setDatabaseStatus('error')
+          setDatabaseMessage(`Could not load your client profile: ${profileError.message}`)
+          return
+        }
+        setClientProfile(profile)
+        setAccountType(profile ? profile.status === 'active' ? 'client' : 'client-inactive' : 'client-registration')
+        setDatabaseStatus('connected')
+        return
+      }
       setOrganizations(rows)
       if (rows.length === 0) {
         setOrganizationId('')
         setDatabaseStatus('no-organization')
+        setAccountType('staff')
         return
       }
+      setAccountType('staff')
       setOrganizationId((current) => rows.some((organization) => organization.organization_id === current)
         ? current
         : rows[0].organization_id)
-    }).catch((error) => {
+    }
+    identifyAccount().catch((error) => {
       if (cancelled) return
       setDatabaseStatus('error')
       setDatabaseMessage(`Could not load your organization access: ${error instanceof Error ? error.message : 'Unknown connection error.'}`)
@@ -324,7 +355,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [session, authLoading])
+  }, [session, authLoading, authMode])
 
   useEffect(() => {
     if (!supabaseConfigured || !supabase || !session || !organizationId) return undefined
@@ -344,6 +375,10 @@ function App() {
     setActive(label)
     setMobileNav(false)
     setQuery('')
+    setRecordModal(false)
+    setPatientModal(false)
+    setEditingRecord(null)
+    setPatientEditingRecord(null)
   }
 
   async function submitPatient(event) {
@@ -365,11 +400,15 @@ function App() {
     setIsSavingRecord(true)
     setRecordError('')
     try {
-      const { error } = await supabase.from('patients').insert(record)
-      if (error) throw error
+      const result = patientEditingRecord
+        ? await supabase.from('patients').update(record).eq('id', patientEditingRecord.id).eq('organization_id', organizationId).select('id').maybeSingle()
+        : await supabase.from('patients').insert(record)
+      if (result.error) throw result.error
+      if (patientEditingRecord && !result.data) throw new Error('Patient was not updated. Confirm your organization access and try again.')
       await loadOrganizationData()
       setPatientModal(false)
-      setToast('Patient saved to Supabase')
+      setPatientEditingRecord(null)
+      setToast(patientEditingRecord ? 'Patient updated in Supabase' : 'Patient saved to Supabase')
       window.setTimeout(() => setToast(''), 3200)
     } catch (error) {
       setRecordError(`Could not save patient: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
@@ -385,17 +424,24 @@ function App() {
     const record = { organization_id: organizationId }
     for (const field of activeModule.fields ?? []) {
       const value = formData.get(field.name)
-      if (value === null || value === '') continue
+      if (value === null || value === '') {
+        if (editingRecord) record[field.name] = null
+        continue
+      }
       record[field.name] = field.type === 'number' ? Number(value) : value
     }
     setIsSavingRecord(true)
     setRecordError('')
     try {
-      const { error } = await supabase.from(activeModule.table).insert(record)
-      if (error) throw error
+      const result = editingRecord
+        ? await supabase.from(activeModule.table).update(record).eq('id', editingRecord.id).eq('organization_id', organizationId).select('id').maybeSingle()
+        : await supabase.from(activeModule.table).insert(record)
+      if (result.error) throw result.error
+      if (editingRecord && !result.data) throw new Error('Record was not updated. Confirm your organization access and try again.')
       await loadOrganizationData()
       setRecordModal(false)
-      setToast(`${active.slice(0, -1) || active} saved to Supabase`)
+      setEditingRecord(null)
+      setToast(editingRecord ? 'Record updated in Supabase' : `${active.slice(0, -1) || active} saved to Supabase`)
       window.setTimeout(() => setToast(''), 3200)
     } catch (error) {
       setRecordError(`Could not save record: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
@@ -406,8 +452,61 @@ function App() {
 
   function openRecordModal() {
     setRecordError('')
-    if (active === 'Patients') setPatientModal(true)
-    else setRecordModal(true)
+    if (active === 'Patients') {
+      setPatientEditingRecord(null)
+      setPatientModal(true)
+    } else {
+      setEditingRecord(null)
+      setRecordModal(true)
+    }
+  }
+
+  function editRecord(record) {
+    setRecordError('')
+    setEditingRecord(record)
+  }
+
+  async function deleteRecord(record) {
+    if (!supabase || !activeModule || !window.confirm('Delete this record? This cannot be undone.')) return
+    setRecordError('')
+    try {
+      const { data, error } = await supabase.from(activeModule.table).delete()
+        .eq('id', record.id)
+        .eq('organization_id', organizationId)
+        .select('id').maybeSingle()
+      if (error) throw error
+      if (!data) throw new Error('Record was not deleted. Confirm your organization access and try again.')
+      await loadOrganizationData()
+      setToast('Record deleted from Supabase')
+      window.setTimeout(() => setToast(''), 3200)
+    } catch (error) {
+      setRecordError(`Could not delete record: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
+    }
+  }
+
+  async function deletePatient(patient) {
+    if (!supabase || !window.confirm(`Delete the patient record for ${patient.name}? This cannot be undone.`)) return
+    setRecordError('')
+    try {
+      const { data, error } = await supabase.from('patients').delete()
+        .eq('id', patient.databaseId)
+        .eq('organization_id', organizationId)
+        .select('id').maybeSingle()
+      if (error) throw error
+      if (!data) throw new Error('Patient was not deleted. Confirm your organization access and try again.')
+      await loadOrganizationData()
+      setToast('Patient deleted from Supabase')
+      window.setTimeout(() => setToast(''), 3200)
+    } catch (error) {
+      setRecordError(`Could not delete patient: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
+    }
+  }
+
+  function editPatient(databaseId) {
+    const patient = workspaceData.patients?.find((record) => record.id === databaseId)
+    if (!patient) return
+    setPatientEditingRecord(patient)
+    setRecordError('')
   }
 
   function sendMessage(event) {
@@ -427,42 +526,38 @@ function App() {
     openRecordModal()
   }
 
-  async function signIn(event) {
-    event.preventDefault()
-    if (!supabase) return
-    setAuthBusy(true)
+  async function signIn(email, password) {
+    if (!supabase) throw new Error('Supabase is not configured.')
+    setAuthMode('staff')
+    setAccountType('unknown')
     setAuthError('')
-    try {
-      const { error } = await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword })
-      if (error) setAuthError(`Sign-in failed: ${error.message}`)
-    } catch (error) {
-      setAuthError(`Sign-in failed: ${error instanceof Error ? error.message : 'Unknown authentication error.'}`)
-    } finally {
-      setAuthBusy(false)
-    }
+    window.history.replaceState({}, '', window.location.pathname)
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) throw error
   }
 
-  async function createOrganization(event) {
-    event.preventDefault()
-    if (!supabase) return
-    setAuthBusy(true)
-    setAuthError('')
-    try {
-      const { error } = await supabase.rpc('create_my_organization', { p_name: organizationName.trim() })
-      if (error) throw error
-      const { data, error: loadError } = await supabase.rpc('my_organizations')
-      if (loadError) throw loadError
-      const rows = data ?? []
-      setOrganizations(rows)
-      setOrganizationId(rows[0]?.organization_id ?? '')
-      setOrganizationName('')
-      setDatabaseStatus(rows.length ? 'connecting' : 'no-organization')
-    } catch (error) {
-      setAuthError(`Could not create organization: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
-      setAuthBusy(false)
-      return
-    }
-    setAuthBusy(false)
+  function beginClientSignIn() {
+    setAuthMode('client')
+    setAccountType('unknown')
+    window.history.replaceState({}, '', `${window.location.pathname}?portal=client`)
+  }
+
+  async function completeClientProfile() {
+    const { data, error } = await supabase.from('client_profiles')
+      .select('id, full_name, email, phone, address, birth_date, email_notifications, status')
+      .single()
+    if (error) throw error
+    setClientProfile(data)
+    setAccountType('client')
+    setDatabaseStatus('connected')
+  }
+
+  async function reloadClientProfile() {
+    const { data, error } = await supabase.from('client_profiles')
+      .select('id, full_name, email, phone, address, birth_date, email_notifications, status')
+      .single()
+    if (error) throw error
+    setClientProfile(data)
   }
 
   async function signOut() {
@@ -470,55 +565,48 @@ function App() {
     try {
       const { error } = await supabase.auth.signOut()
       if (error) setAuthError(`Could not sign out: ${error.message}`)
+      else {
+        setAccountType('unknown')
+        setClientProfile(null)
+        setAuthMode('staff')
+        window.history.replaceState({}, '', window.location.pathname)
+      }
     } catch (error) {
       setAuthError(`Could not sign out: ${error instanceof Error ? error.message : 'Unknown authentication error.'}`)
     }
   }
 
   if (!supabaseConfigured) {
-    return <AuthFrame>
-      <div className="eyebrow">SUPABASE SETUP</div>
-      <h1>Connect your database</h1>
-      <p className="auth-description">Add your Supabase project URL and publishable/anon key to <code>.env.local</code>, then restart the development server. This app does not use preview records.</p>
-      <p className="auth-footnote">Apply <code>supabase/schema.sql</code> in your project's SQL Editor before signing in.</p>
-      {supabaseConfigurationError && <p className="auth-error" role="alert">{supabaseConfigurationError}</p>}
-    </AuthFrame>
+    return <ClientPortal />
   }
 
-  if (supabaseConfigured && authLoading) {
+  if (authLoading) {
     return <AuthFrame><p>Restoring your secure session…</p></AuthFrame>
   }
-  if (supabaseConfigured && !session) {
-    return <AuthFrame>
-      <div className="eyebrow">SECURE WORKSPACE</div>
-      <h1>Sign in to CareCircle</h1>
-      <p className="auth-description">Use the email and password provided by your organization administrator.</p>
-      {authError && <p className="auth-error" role="alert">{authError}</p>}
-      <form className="auth-form" onSubmit={signIn}>
-        <label>Email address<input type="email" autoComplete="username" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
-        <label>Password<input type="password" autoComplete="current-password" required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
-        <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Signing in…' : 'Sign in'}</button>
-      </form>
-      <p className="auth-footnote">Accounts are created by an administrator in Supabase. Public sign-up is disabled.</p>
-    </AuthFrame>
+  if (!session) {
+    return <ClientPortal onStaffLogin={signIn} onClientAuthStart={beginClientSignIn} initialAuthError={authError} />
   }
-  if (supabaseConfigured && session && (databaseStatus === 'connecting' || databaseStatus === 'authentication-required' || (!organizationId && databaseStatus !== 'no-organization' && databaseStatus !== 'error'))) {
+  if (accountType === 'client' || accountType === 'client-registration') {
+    return <ClientPortal mode={accountType === 'client' ? 'client' : 'client-setup'} profile={clientProfile} onProfileCreated={completeClientProfile} onNotificationChange={reloadClientProfile} onSignOut={signOut} />
+  }
+  if (accountType === 'client-inactive') {
+    return <AuthFrame><div className="eyebrow">CLIENT ACCOUNT</div><h1>Account inactive</h1><p className="auth-description">Please contact your clinic to restore access to your client portal.</p><button className="auth-link" type="button" onClick={signOut}>Sign out</button></AuthFrame>
+  }
+  if (accountType === 'client-blocked') {
+    return <AuthFrame><div className="eyebrow">STAFF ACCOUNT</div><h1>Use staff sign-in</h1><p className="auth-description">Staff accounts cannot use client email sign-in. Sign out, then use the password login from the staff login button.</p><button className="auth-link" type="button" onClick={signOut}>Sign out</button></AuthFrame>
+  }
+  if ((accountType === 'unknown' && databaseStatus !== 'error') || databaseStatus === 'connecting' || databaseStatus === 'authentication-required' || (!organizationId && databaseStatus !== 'no-organization' && databaseStatus !== 'error')) {
     return <AuthFrame><p>Loading your organization data…</p></AuthFrame>
   }
-  if (supabaseConfigured && session && databaseStatus === 'no-organization') {
+  if (databaseStatus === 'no-organization') {
     return <AuthFrame>
-      <div className="eyebrow">FIRST-TIME SETUP</div>
-      <h1>Create your organization</h1>
-      <p className="auth-description">This account does not yet belong to an organization. Creating one makes you its owner; the new organization starts empty.</p>
-      {authError && <p className="auth-error" role="alert">{authError}</p>}
-      <form className="auth-form" onSubmit={createOrganization}>
-        <label>Organization name<input required minLength={2} maxLength={120} value={organizationName} onChange={(event) => setOrganizationName(event.target.value)} /></label>
-        <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Creating…' : 'Create organization'}</button>
-      </form>
+      <div className="eyebrow">STAFF ACCESS</div>
+      <h1>No organization access</h1>
+      <p className="auth-description">Ask your organization head to create or invite your staff account and assign the correct organization role in Supabase.</p>
       <button className="auth-link" type="button" onClick={signOut}>Sign out</button>
     </AuthFrame>
   }
-  if (supabaseConfigured && session && databaseStatus === 'error') {
+  if (databaseStatus === 'error') {
     return <AuthFrame>
       <div className="eyebrow">WORKSPACE UNAVAILABLE</div>
       <h1>Could not load your data</h1>
@@ -537,6 +625,17 @@ function App() {
         : databaseStatus === 'configuration-error'
           ? supabaseConfigurationError
           : 'Connect Supabase to load your organization records.'
+  const memberRole = organizations.find((organization) => organization.organization_id === organizationId)?.member_role
+  const canManageActiveModule = active === 'Patients'
+    ? ['owner', 'admin', 'clinician', 'health_worker'].includes(memberRole)
+    : activeModule && (
+      activeModule.table === 'inventory_items'
+        ? ['owner', 'admin', 'inventory_manager'].includes(memberRole)
+        : activeModule.table === 'report_runs'
+          ? ['owner', 'admin'].includes(memberRole)
+          : ['owner', 'admin', 'clinician', 'health_worker'].includes(memberRole)
+    )
+  const canDeleteActiveModule = ['owner', 'admin'].includes(memberRole)
 
   return (
     <div className="app-shell">
@@ -571,7 +670,7 @@ function App() {
               {showNotifications && <div className="notification-popover"><div className="popover-heading"><strong>Open alerts</strong><span>{(workspaceData.alerts ?? []).filter((alert) => alert.status === 'open').length}</span></div>{(workspaceData.alerts ?? []).filter((alert) => alert.status === 'open').slice(0, 5).map((alert) => <p key={alert.id}><b>{alert.title}</b><br />{alert.category} · {alert.priority}</p>)}{!(workspaceData.alerts ?? []).some((alert) => alert.status === 'open') && <p>No open alerts.</p>}</div>}
             </div>
             <span className="topbar-divider" />
-            {supabaseConfigured && organizations.length > 1 && <select className="organization-switcher" aria-label="Select organization" value={organizationId} onChange={(event) => { setDatabaseStatus('connecting'); setWorkspaceData({}); setCommunities([]); setFacilities([]); setOrganizationId(event.target.value) }}>{organizations.map((organization) => <option key={organization.organization_id} value={organization.organization_id}>{organization.organization_name}</option>)}</select>}
+            {supabaseConfigured && organizations.length > 1 && <select className="organization-switcher" aria-label="Select organization" value={organizationId} onChange={(event) => { setDatabaseStatus('connecting'); setWorkspaceData({}); setCommunities([]); setFacilities([]); setRecordModal(false); setPatientModal(false); setEditingRecord(null); setPatientEditingRecord(null); setOrganizationId(event.target.value) }}>{organizations.map((organization) => <option key={organization.organization_id} value={organization.organization_id}>{organization.organization_name}</option>)}</select>}
             {supabaseConfigured ? <button className="sign-out-button" type="button" onClick={signOut}>Sign out</button> : <Avatar initials="EW" color="mint" small />}
           </div>
         </header>
@@ -586,17 +685,21 @@ function App() {
             <section className="connected-overview"><h2>Your organization data</h2><p>Records entered in each workspace are saved in Supabase and protected by organization-level access policies.</p></section>
           </>}
 
-          {active === 'Patients' && <><div className="welcome-row"><div><div className="eyebrow">PATIENT DIRECTORY</div><h1>Patients</h1><p className="page-subtitle">Manage and follow up with people in your community.</p></div><button className="primary-button" type="button" onClick={openRecordModal}><Icon name="plus" size={17} /> Add a patient</button></div><div className="module-stats"><div className="module-stat"><span>Total patients</span><strong>{patientList.length.toLocaleString()}</strong><small>In this organization</small></div></div><PatientTable patients={matchingPatients} query={query} onSelect={(patient) => setToast(`${patient.name} · ${patient.id}`)} /></>}
+          {active === 'Services & Queue' && <Suspense fallback={<p className="page-subtitle">Loading service tools…</p>}><ServicesWorkspace organizationId={organizationId} facilities={facilities} memberRole={organizations.find((organization) => organization.organization_id === organizationId)?.member_role} /></Suspense>}
+
+          {active === 'Patients' && <><div className="welcome-row"><div><div className="eyebrow">PATIENT DIRECTORY</div><h1>Patients</h1><p className="page-subtitle">Manage and follow up with people in your community.</p></div>{canManageActiveModule && <button className="primary-button" type="button" onClick={openRecordModal}><Icon name="plus" size={17} /> Add a patient</button>}</div><div className="module-stats"><div className="module-stat"><span>Total patients</span><strong>{patientList.length.toLocaleString()}</strong><small>In this organization</small></div></div>{recordError && <p className="auth-error" role="alert">{recordError}</p>}<PatientTable patients={matchingPatients} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editPatient} onDelete={deletePatient} /></>}
 
           {active === 'AI Assistant' && <><div className="welcome-row"><div><div className="eyebrow">WORKSPACE SUPPORT</div><h1>Workspace helper</h1><p className="page-subtitle">Navigation support only; this screen does not use an AI service.</p></div></div><div className="assistant-layout"><section className="panel chat-panel"><div className="chat-header"><span className="assistant-avatar"><Icon name="sparkles" size={20} /></span><div><strong>CareCircle workspace helper</strong><small>Navigation support</small></div></div><div className="chat-messages">{messages.map((message, index) => <div className={`chat-message message-${message.from}`} key={`${message.from}-${index}`}><p>{message.text}</p></div>)}</div><div className="suggestions"><span>Try asking</span>{['Open patients', 'Open inventory'].map((suggestion) => <button type="button" key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>)}</div><form className="chat-form" onSubmit={sendMessage}><input aria-label="Message the workspace helper" placeholder="Ask where to find a workspace..." value={chatInput} onChange={(event) => setChatInput(event.target.value)} /><button aria-label="Send message" type="submit"><Icon name="arrowUp" size={17} /></button></form></section></div></>}
 
-          {activeModule && <><div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div>{activeModule.fields && <button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name="plus" size={17} />{active === 'Reports' ? 'Request report' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'an item' : active === 'Referrals' ? 'a referral' : active === 'Alerts' ? 'an alert' : 'record'}`}</button>}</div><div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{activeRows.length.toLocaleString()}</strong><small>In this organization</small></div></div>{!activeModule.fields && <div className="form-note">{active === 'Users' ? 'Invite and manage accounts from Supabase Authentication. This screen shows organization memberships only.' : 'QR IDs are read-only here; create tokens through a secured server-side workflow.'}</div>}<ModuleTable module={activeModule} rows={activeRows} query={query} /></>}
+          {activeModule && <><div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div>{activeModule.fields && canManageActiveModule && <button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name="plus" size={17} />{active === 'Reports' ? 'Request report' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'an item' : active === 'Referrals' ? 'a referral' : active === 'Alerts' ? 'an alert' : 'record'}`}</button>}</div><div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{activeRows.length.toLocaleString()}</strong><small>In this organization</small></div></div>{!activeModule.fields && <div className="form-note">{active === 'Users' ? 'Invite and manage accounts from Supabase Authentication. This screen shows organization memberships only.' : 'QR IDs are read-only here; create tokens through a secured server-side workflow.'}</div>}{recordError && <p className="auth-error" role="alert">{recordError}</p>}<ModuleTable module={activeModule} rows={activeRows} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editRecord} onDelete={deleteRecord} /></>}
         </div>
       </main>
 
       {mobileNav && <button className="mobile-scrim" type="button" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
       {patientModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPatientModal(false) }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="patient-modal-title"><div className="modal-heading"><div><div className="eyebrow">PATIENT DIRECTORY</div><h2 id="patient-modal-title">Add a patient</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setPatientModal(false)}><Icon name="close" /></button></div><p className="modal-description">Create a patient record in this organization.</p><form className="patient-form" onSubmit={submitPatient}><label>Full name<input autoFocus required name="full_name" maxLength={120} placeholder="Enter full name" /></label><label>Date of birth<input name="birth_date" type="date" /></label><label>Sex<select name="sex" defaultValue=""><option value="">Not recorded</option><option value="female">Female</option><option value="male">Male</option><option value="intersex">Intersex</option><option value="unknown">Unknown</option><option value="not_recorded">Not recorded</option></select></label><label>Community<select name="community_id" defaultValue=""><option value="">No community</option>{communities.map((community) => <option key={community.id} value={community.id}>{community.name}</option>)}</select></label><label>Care program<input name="care_program" maxLength={120} defaultValue="General care" /></label>{recordError && <p className="auth-error" role="alert">{recordError}</p>}<div className="form-note"><Icon name="shield" size={15} />Patient records are stored in your organization’s Supabase database.</div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setPatientModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={isSavingRecord || databaseStatus !== 'connected'}><Icon name="plus" size={16} />{isSavingRecord ? 'Saving…' : 'Create patient'}</button></div></form></section></div>}
       {recordModal && activeModule?.fields && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRecordModal(false) }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="record-modal-title"><div className="modal-heading"><div><div className="eyebrow">{activeModule.eyebrow}</div><h2 id="record-modal-title">Add {active.toLowerCase()} record</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setRecordModal(false)}><Icon name="close" /></button></div><p className="modal-description">This record will be saved to the selected organization.</p><form className="patient-form" onSubmit={submitWorkspaceRecord}>{activeModule.fields.map((field) => { const options = field.source === 'communities' ? communities.map((item) => ({ id: item.id, label: item.name })) : field.source === 'patients' ? patientOptions.map((item) => ({ id: item.id, label: item.full_name })) : facilities.map((item) => ({ id: item.id, label: item.name })); return <label key={field.name}>{field.label}{field.type === 'select' ? <select name={field.name} required={field.required} defaultValue=""><option value="">Select {field.label.toLowerCase()}</option>{(field.options ?? options.map((item) => item.label)).map((item, index) => <option key={field.options ? item : options[index].id} value={field.options ? item : options[index].id}>{item}</option>)}</select> : field.type === 'textarea' ? <textarea name={field.name} required={field.required} rows="3" /> : <input name={field.name} type={field.type ?? 'text'} required={field.required} min={field.type === 'number' ? 0 : undefined} />}</label> })}{recordError && <p className="auth-error" role="alert">{recordError}</p>}{active === 'Reports' && <p className="form-note">Report requests are recorded in Supabase; file generation is not configured.</p>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setRecordModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={isSavingRecord || databaseStatus !== 'connected'}>{isSavingRecord ? 'Saving…' : 'Save record'}</button></div></form></section></div>}
+      {patientEditingRecord && <PatientEditModal patient={patientEditingRecord} communities={communities} saving={isSavingRecord} error={recordError} onSubmit={submitPatient} onClose={() => setPatientEditingRecord(null)} />}
+      {editingRecord && activeModule?.fields && <WorkspaceRecordModal module={activeModule} record={editingRecord} communities={communities} patients={patientOptions} facilities={facilities} saving={isSavingRecord} error={recordError} onSubmit={submitWorkspaceRecord} onClose={() => setEditingRecord(null)} />}
       {toast && <div className="toast-message"><span>✓</span>{toast}</div>}
     </div>
   )
@@ -608,13 +711,32 @@ function formatCell(value) {
   return typeof value === 'string' ? value.replaceAll('_', ' ') : String(value)
 }
 
-function PatientTable({ patients: rows, query, onSelect }) {
-  return <section className="panel data-panel"><div className="table-toolbar"><div><h2>Patients <span className="row-count">{rows.length}</span></h2><p>Patient records from this organization</p></div></div><div className="table-scroll"><table><thead><tr><th>Patient</th><th>Patient ID</th><th>Age / sex</th><th>Community</th><th>Care program</th><th>Status</th></tr></thead><tbody>{rows.map((patient) => <tr key={patient.id} onClick={() => onSelect(patient)}><td><div className="patient-cell"><Avatar initials={patient.initials} color={patient.color} small /><strong>{patient.name}</strong></div></td><td className="muted-cell">{patient.id}</td><td className="muted-cell">{patient.age}{patient.sex !== '—' ? ` · ${patient.sex}` : ''}</td><td>{patient.community}</td><td>{patient.program}</td><td><StatusPill>{patient.status}</StatusPill></td></tr>)}</tbody></table>{rows.length === 0 && <div className="empty-state">{query ? `No patients match “${query}”.` : 'No patient records yet. Add your first patient to get started.'}</div>}</div><div className="table-footer">Showing <strong>{rows.length}</strong> of <strong>{rows.length}</strong> patients</div></section>
+function PatientTable({ patients: rows, query, canManage, canDelete, onEdit, onDelete }) {
+  return <section className="panel data-panel"><div className="table-toolbar"><div><h2>Patients <span className="row-count">{rows.length}</span></h2><p>Patient records from this organization</p></div></div><div className="table-scroll"><table><thead><tr><th>Patient</th><th>Patient ID</th><th>Age / sex</th><th>Community</th><th>Care program</th><th>Status</th>{canManage && <th>Actions</th>}</tr></thead><tbody>{rows.map((patient) => <tr key={patient.databaseId}><td><div className="patient-cell"><Avatar initials={patient.initials} color={patient.color} small /><strong>{patient.name}</strong></div></td><td className="muted-cell">{patient.id}</td><td className="muted-cell">{patient.age}{patient.sex !== '—' ? ` · ${patient.sex}` : ''}</td><td>{patient.community}</td><td>{patient.program}</td><td><StatusPill>{patient.status}</StatusPill></td>{canManage && <td><div className="table-actions"><button className="secondary-button" type="button" onClick={() => onEdit(patient.databaseId)}>Edit</button>{canDelete && <button className="secondary-button danger-button" type="button" onClick={() => onDelete(patient)}>Delete</button>}</div></td>}</tr>)}</tbody></table>{rows.length === 0 && <div className="empty-state">{query ? `No patients match “${query}”.` : 'No patient records yet. Add your first patient to get started.'}</div>}</div><div className="table-footer">Showing <strong>{rows.length}</strong> of <strong>{rows.length}</strong> patients</div></section>
 }
 
-function ModuleTable({ module, rows, query }) {
+function ModuleTable({ module, rows, query, canManage, canDelete, onEdit, onDelete }) {
   const filteredRows = rows.filter((record) => module.map(record).some((cell) => formatCell(cell).toLowerCase().includes(query.toLowerCase())))
-  return <section className="panel data-panel"><div className="table-toolbar"><div><h2>{activeTitle(module)} <span className="row-count">{filteredRows.length}</span></h2><p>Records from this organization</p></div></div><div className="table-scroll"><table><thead><tr>{module.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{filteredRows.map((record, index) => <tr key={record.id ?? record.user_id ?? index}>{module.map(record).map((cell, cellIndex) => <td key={module.columns[cellIndex]}>{/status|priority/i.test(module.columns[cellIndex]) && cell ? <StatusPill>{formatCell(cell)}</StatusPill> : cellIndex === 0 ? <strong className="table-primary-text">{formatCell(cell)}</strong> : <span className="muted-cell">{formatCell(cell)}</span>}</td>)}</tr>)}</tbody></table>{filteredRows.length === 0 && <div className="empty-state">{query ? `No records match “${query}”.` : `No ${activeTitle(module).toLowerCase()} yet.`}</div>}</div><div className="table-footer">Showing <strong>{filteredRows.length}</strong> of <strong>{rows.length}</strong> records</div></section>
+  return <section className="panel data-panel"><div className="table-toolbar"><div><h2>{activeTitle(module)} <span className="row-count">{filteredRows.length}</span></h2><p>Records from this organization</p></div></div><div className="table-scroll"><table><thead><tr>{module.columns.map((column) => <th key={column}>{column}</th>)}{canManage && module.fields && <th>Actions</th>}</tr></thead><tbody>{filteredRows.map((record, index) => <tr key={record.id ?? record.user_id ?? index}>{module.map(record).map((cell, cellIndex) => <td key={module.columns[cellIndex]}>{/status|priority/i.test(module.columns[cellIndex]) && cell ? <StatusPill>{formatCell(cell)}</StatusPill> : cellIndex === 0 ? <strong className="table-primary-text">{formatCell(cell)}</strong> : <span className="muted-cell">{formatCell(cell)}</span>}</td>)}{canManage && module.fields && <td><div className="table-actions"><button className="secondary-button" type="button" onClick={() => onEdit(record)}>Edit</button>{canDelete && <button className="secondary-button danger-button" type="button" onClick={() => onDelete(record)}>Delete</button>}</div></td>}</tr>)}</tbody></table>{filteredRows.length === 0 && <div className="empty-state">{query ? `No records match “${query}”.` : `No ${activeTitle(module).toLowerCase()} yet.`}</div>}</div><div className="table-footer">Showing <strong>{filteredRows.length}</strong> of <strong>{rows.length}</strong> records</div></section>
+}
+
+function PatientEditModal({ patient, communities, saving, error, onSubmit, onClose }) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="patient-edit-title"><div className="modal-heading"><div><div className="eyebrow">PATIENT DIRECTORY</div><h2 id="patient-edit-title">Edit patient</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={onClose}><Icon name="close" /></button></div><p className="modal-description">Update this patient record.</p><form className="patient-form" onSubmit={onSubmit}><label>Full name<input autoFocus required name="full_name" maxLength={120} defaultValue={patient.full_name} /></label><label>Date of birth<input name="birth_date" type="date" defaultValue={patient.birth_date ?? ''} /></label><label>Sex<select name="sex" defaultValue={patient.sex ?? ''}><option value="">Not recorded</option><option value="female">Female</option><option value="male">Male</option><option value="intersex">Intersex</option><option value="unknown">Unknown</option><option value="not_recorded">Not recorded</option></select></label><label>Community<select name="community_id" defaultValue={patient.community_id ?? ''}><option value="">No community</option>{communities.map((community) => <option key={community.id} value={community.id}>{community.name}</option>)}</select></label><label>Care program<input name="care_program" maxLength={120} defaultValue={patient.care_program ?? 'General care'} /></label>{error && <p className="auth-error" role="alert">{error}</p>}<div className="form-note"><Icon name="shield" size={15} />Patient information is stored in your organization’s Supabase database.</div><div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Update patient'}</button></div></form></section></div>
+}
+
+function WorkspaceRecordModal({ module, record, communities, patients, facilities, saving, error, onSubmit, onClose }) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="record-edit-title"><div className="modal-heading"><div><div className="eyebrow">{module.eyebrow}</div><h2 id="record-edit-title">Edit {activeTitle(module).toLowerCase()}</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={onClose}><Icon name="close" /></button></div><p className="modal-description">Changes are saved to the selected organization.</p><form className="patient-form" onSubmit={onSubmit}>{module.fields.map((field) => {
+    const options = field.source === 'communities'
+      ? communities.map((item) => ({ id: item.id, label: item.name }))
+      : field.source === 'patients'
+        ? patients.map((item) => ({ id: item.id, label: item.full_name }))
+        : facilities.map((item) => ({ id: item.id, label: item.name }))
+    return <label key={field.name}>{field.label}{field.type === 'select'
+      ? <select name={field.name} required={field.required} defaultValue={record[field.name] ?? ''}><option value="">Select {field.label.toLowerCase()}</option>{(field.options ?? options.map((item) => item.label)).map((item, index) => <option key={field.options ? item : options[index].id} value={field.options ? item : options[index].id}>{item}</option>)}</select>
+      : field.type === 'textarea'
+        ? <textarea name={field.name} required={field.required} rows="3" defaultValue={record[field.name] ?? ''} />
+        : <input name={field.name} type={field.type ?? 'text'} required={field.required} min={field.type === 'number' ? 0 : undefined} defaultValue={record[field.name] ?? ''} />}</label>
+  })}{error && <p className="auth-error" role="alert">{error}</p>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Update record'}</button></div></form></section></div>
 }
 
 function activeTitle(module) {
