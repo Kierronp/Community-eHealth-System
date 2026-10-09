@@ -10,10 +10,8 @@ const navigation = [
   { label: 'AI Assistant', icon: 'sparkles' },
   { label: 'Patients', icon: 'users' },
   { label: 'Families', icon: 'family' },
-  { label: 'QR ID', icon: 'qr' },
   { label: 'Vaccination', icon: 'shield' },
   { label: 'Inventory', icon: 'box' },
-  { label: 'Referrals', icon: 'arrow' },
   { label: 'Reports', icon: 'chart' },
   { label: 'Alerts', icon: 'bell' },
   { label: 'Services & Queue', icon: 'calendar' },
@@ -51,15 +49,6 @@ const workspaceConfig = {
     ],
     map: (row) => [row.household_name, row.family_number, row.community?.name, row.status],
   },
-  'QR ID': {
-    table: 'qr_ids',
-    order: 'issued_at',
-    select: 'id, issued_at, expires_at, revoked_at, patient:patients(full_name, patient_number)',
-    eyebrow: 'PATIENT IDENTIFICATION',
-    description: 'Review issued patient identifiers.',
-    columns: ['Patient', 'Patient ID', 'Issued', 'Expires', 'Status'],
-    map: (row) => [row.patient?.full_name, row.patient?.patient_number, row.issued_at, row.expires_at, row.revoked_at ? 'Revoked' : 'Active'],
-  },
   Vaccination: {
     table: 'vaccination_records',
     select: 'id, vaccine_name, dose_name, due_date, status, patient_id, patient:patients(full_name)',
@@ -88,20 +77,6 @@ const workspaceConfig = {
       { name: 'reorder_level', label: 'Reorder level', type: 'number' },
     ],
     map: (row) => [row.name, row.item_code, row.category, row.unit, row.reorder_level, row.is_active ? 'Active' : 'Inactive'],
-  },
-  Referrals: {
-    table: 'referrals',
-    select: 'id, reason, priority, referred_at, follow_up_due, status, patient_id, patient:patients(full_name)',
-    eyebrow: 'CARE COORDINATION',
-    description: 'Coordinate patient referrals to facilities.',
-    columns: ['Patient', 'Reason', 'Priority', 'Referred on', 'Follow-up', 'Status'],
-    fields: [
-      { name: 'patient_id', label: 'Patient', type: 'select', source: 'patients', required: true },
-      { name: 'reason', label: 'Reason', required: true },
-      { name: 'priority', label: 'Priority', type: 'select', options: ['routine', 'urgent', 'emergency'] },
-      { name: 'follow_up_due', label: 'Follow-up due', type: 'date' },
-    ],
-    map: (row) => [row.patient?.full_name, row.reason, row.priority, row.referred_at, row.follow_up_due, row.status],
   },
   Reports: {
     table: 'report_runs',
@@ -520,7 +495,7 @@ function App() {
     const destination = navigation.find((item) => question.includes(item.label.toLowerCase()))
     const response = destination
       ? `Open ${destination.label} from the sidebar to view its organization records.`
-      : 'I can help you find a workspace. Use the sidebar to open patients, families, vaccination, inventory, referrals, reports, alerts, or users.'
+      : 'I can help you find a workspace. Use the sidebar to open patients, families, vaccination, inventory, reports, alerts, services, or users.'
     setMessages((current) => [...current, { from: 'user', text }, { from: 'assistant', text: response }])
     setChatInput('')
   }
@@ -692,7 +667,7 @@ function App() {
           {active === 'Dashboard' && <>
             <div className="welcome-row"><div><div className="eyebrow">ORGANIZATION OVERVIEW</div><h1>{organizations.find((organization) => organization.organization_id === organizationId)?.organization_name ?? 'Workspace'}</h1><p className="page-subtitle">Live records from your selected organization.</p></div><button className="primary-button" type="button" onClick={() => navigate('Patients')}><Icon name="users" size={17} /> View patients</button></div>
             <section className="stats-grid" aria-label="Organization records">
-              {[['Patients', patientList.length], ['Families', (workspaceData.families ?? []).length], ['Open referrals', (workspaceData.referrals ?? []).filter((row) => row.status === 'open').length], ['Open alerts', (workspaceData.alerts ?? []).filter((row) => row.status === 'open').length]].map(([label, count]) => <article className="stat-card" key={label}><p>{label}</p><strong>{count.toLocaleString()}</strong></article>)}
+              {[['Patients', patientList.length], ['Families', (workspaceData.families ?? []).length], ['Open alerts', (workspaceData.alerts ?? []).filter((row) => row.status === 'open').length]].map(([label, count]) => <article className="stat-card" key={label}><p>{label}</p><strong>{count.toLocaleString()}</strong></article>)}
             </section>
             <section className="connected-overview"><h2>Your organization data</h2><p>Records entered in each workspace are saved in Supabase and protected by organization-level access policies.</p></section>
           </>}
@@ -703,7 +678,7 @@ function App() {
 
           {active === 'AI Assistant' && <><div className="welcome-row"><div><div className="eyebrow">WORKSPACE SUPPORT</div><h1>Workspace helper</h1><p className="page-subtitle">Navigation support only; this screen does not use an AI service.</p></div></div><div className="assistant-layout"><section className="panel chat-panel"><div className="chat-header"><span className="assistant-avatar"><Icon name="sparkles" size={20} /></span><div><strong>CareCircle workspace helper</strong><small>Navigation support</small></div></div><div className="chat-messages">{messages.map((message, index) => <div className={`chat-message message-${message.from}`} key={`${message.from}-${index}`}><p>{message.text}</p></div>)}</div><div className="suggestions"><span>Try asking</span>{['Open patients', 'Open inventory'].map((suggestion) => <button type="button" key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>)}</div><form className="chat-form" onSubmit={sendMessage}><input aria-label="Message the workspace helper" placeholder="Ask where to find a workspace..." value={chatInput} onChange={(event) => setChatInput(event.target.value)} /><button aria-label="Send message" type="submit"><Icon name="arrowUp" size={17} /></button></form></section></div></>}
 
-          {activeModule && <><div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div>{activeModule.fields && canManageActiveModule && <button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name="plus" size={17} />{active === 'Reports' ? 'Request report' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'an item' : active === 'Referrals' ? 'a referral' : active === 'Alerts' ? 'an alert' : 'record'}`}</button>}</div><div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{activeRows.length.toLocaleString()}</strong><small>In this organization</small></div></div>{!activeModule.fields && <div className="form-note">{active === 'Users' ? 'Invite and manage accounts from Supabase Authentication. This screen shows organization memberships only.' : 'QR IDs are read-only here; create tokens through a secured server-side workflow.'}</div>}{recordError && <p className="auth-error" role="alert">{recordError}</p>}<ModuleTable module={activeModule} rows={activeRows} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editRecord} onDelete={deleteRecord} /></>}
+          {activeModule && <><div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div>{activeModule.fields && canManageActiveModule && <button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name="plus" size={17} />{active === 'Reports' ? 'Request report' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'an item' : active === 'Alerts' ? 'an alert' : 'record'}`}</button>}</div><div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{activeRows.length.toLocaleString()}</strong><small>In this organization</small></div></div>{!activeModule.fields && <div className="form-note">Invite and manage accounts from Supabase Authentication. This screen shows organization memberships only.</div>}{recordError && <p className="auth-error" role="alert">{recordError}</p>}<ModuleTable module={activeModule} rows={activeRows} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editRecord} onDelete={deleteRecord} /></>}
         </div>
       </main>
 
@@ -754,7 +729,7 @@ function WorkspaceRecordModal({ module, record, communities, patients, facilitie
 function activeTitle(module) {
   if (module.eyebrow === 'TEAM ACCESS') return 'Team members'
   if (module.eyebrow === 'PATIENT IDENTIFICATION') return 'Issued IDs'
-  return module.eyebrow === 'COMMUNITY CARE' ? 'Families' : module.eyebrow === 'IMMUNIZATION' ? 'Vaccination records' : module.eyebrow === 'SUPPLY MANAGEMENT' ? 'Inventory items' : module.eyebrow === 'CARE COORDINATION' ? 'Referrals' : module.eyebrow === 'INSIGHTS & REPORTS' ? 'Report requests' : 'Alerts'
+  return module.eyebrow === 'COMMUNITY CARE' ? 'Families' : module.eyebrow === 'IMMUNIZATION' ? 'Vaccination records' : module.eyebrow === 'SUPPLY MANAGEMENT' ? 'Inventory items' : module.eyebrow === 'INSIGHTS & REPORTS' ? 'Report requests' : 'Alerts'
 }
 
 export default App
