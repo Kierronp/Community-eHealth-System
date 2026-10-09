@@ -1,16 +1,65 @@
-# React + Vite
+# CareCircle Community Health
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A React/Vite community health demo with a standalone PostgreSQL database and a Node.js/Express API. The current API-backed workflow loads and creates patient demo records. Other module screens still display sample data.
 
-Currently, two official plugins are available:
+## Requirements
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Node.js 20 or later
+- PostgreSQL 13 or later, running on your computer or on a PostgreSQL host you control
 
-## React Compiler
+## Create the local PostgreSQL database
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+In `psql` as a PostgreSQL administrator, create an application user and database. Replace the example password with your own:
 
-## Expanding the Oxlint configuration
+```sql
+CREATE USER community_app WITH PASSWORD 'replace-with-a-strong-local-password';
+CREATE DATABASE community_ehealth OWNER community_app;
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+In PowerShell, from this project folder, apply the schema:
+
+```powershell
+psql -h localhost -U community_app -d community_ehealth -f .\database\schema.sql
+```
+
+The schema creates a demo patient table and inserts synthetic preview records.
+
+## Configure and run
+
+Copy `.env.example` to `.env` and set `DATABASE_URL` to match the PostgreSQL user, password, host, and database you created:
+
+```env
+DATABASE_URL=postgresql://community_app:your-password@localhost:5432/community_ehealth
+API_PORT=3001
+DATABASE_SSL=false
+```
+
+Keep `.env` private; it is ignored by Git. Do not put database credentials in a `VITE_` variable or frontend code.
+Set `DATABASE_SSL=true` only when your PostgreSQL host requires TLS.
+
+Open two terminals in the project folder:
+
+```powershell
+npm install
+npm run dev:api
+```
+
+```powershell
+npm run dev
+```
+
+Open the Vite URL printed in the second terminal. Vite proxies `/api` requests to the Node API. The API health banner shows whether it is connected to PostgreSQL. Without `DATABASE_URL`, the interface can still be previewed, but patient additions stay in browser memory and disappear on refresh.
+
+API endpoints:
+
+- `GET /api/health` — PostgreSQL connection status
+- `GET /api/patients` — list demo patient rows
+- `POST /api/patients` — validate and save a demo patient row
+
+## Safety and integration limits
+
+This is a **demo, not a clinical system**. Its patient records are synthetic. Do not store real patient names, identifiers, clinical notes, or information exported from another eHealth system. The API does not yet implement sign-in, user roles, audit trails, facility-level access controls, encryption/backup policies, or production hardening.
+
+The API uses parameterized SQL and validates patient input, but that is not a replacement for authentication and authorization. Before handling real health information, design and review those controls and confirm the applicable privacy, security, residency, and operational requirements.
+
+This app does not yet import or synchronize data from an existing eHealth system. That integration requires an approved source API or export, access credentials, and a reviewed field mapping.
