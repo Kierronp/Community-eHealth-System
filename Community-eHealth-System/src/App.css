@@ -51,13 +51,15 @@ button {
   background: #c48b4c;
 }
 
-.database-error {
+.database-error,
+.database-configuration-error {
   border-bottom-color: #f0dfc8;
   color: #895b30;
   background: #fff8ee;
 }
 
-.database-error .database-indicator {
+.database-error .database-indicator,
+.database-configuration-error .database-indicator {
   background: #d58a42;
 }
 

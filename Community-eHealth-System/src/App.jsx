@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { supabase, supabaseConfigurationError, supabaseConfigured } from './lib/supabase.js'
 import './App.css'
 
 const navigation = [
@@ -150,37 +151,29 @@ function App() {
   const [newPatient, setNewPatient] = useState({ name: '', community: 'Northside', program: 'General care' })
   const [patientList, setPatientList] = useState(patients)
   const [isSavingPatient, setIsSavingPatient] = useState(false)
-  const [databaseStatus, setDatabaseStatus] = useState('connecting')
-  const [databaseMessage, setDatabaseMessage] = useState('')
+  const [databaseStatus, setDatabaseStatus] = useState(supabaseConfigured ? 'connecting' : supabaseConfigurationError ? 'configuration-error' : 'local')
+  const [databaseMessage, setDatabaseMessage] = useState(supabaseConfigurationError)
   const [toast, setToast] = useState('')
 
   const matchingPatients = useMemo(() => patientList.filter((patient) => Object.values(patient).some((value) => String(value).toLowerCase().includes(query.toLowerCase()))), [patientList, query])
   const activeModule = moduleDetails[active]
 
   useEffect(() => {
+    if (!supabaseConfigured) return undefined
+
     let cancelled = false
     async function loadPatients() {
       try {
-        const healthResponse = await fetch('/api/health')
-        if (!healthResponse.ok) throw new Error(`API health check failed (${healthResponse.status}).`)
-        const health = await healthResponse.json()
+        const { data, error } = await supabase.from('demo_patients').select('*').order('created_at', { ascending: false })
         if (cancelled) return
-        if (!health.configured) {
-          setDatabaseStatus('local')
-          return
-        }
-
-        const patientsResponse = await fetch('/api/patients')
-        const patientsResult = await patientsResponse.json()
-        if (!patientsResponse.ok) throw new Error(patientsResult.error || `Could not load patients (${patientsResponse.status}).`)
-        if (cancelled) return
-        setPatientList(patientsResult.map(patientFromRow))
+        if (error) throw error
+        setPatientList(data.map(patientFromRow))
         setDatabaseStatus('connected')
         setDatabaseMessage('')
       } catch (error) {
         if (cancelled) return
         setDatabaseStatus('error')
-        setDatabaseMessage(`Could not connect to the PostgreSQL API: ${error instanceof Error ? error.message : 'Unknown connection error.'}`)
+        setDatabaseMessage(`Could not load Supabase demo patients: ${error instanceof Error ? error.message : 'Unknown connection error.'}`)
       }
     }
 
@@ -199,7 +192,7 @@ function App() {
 
   async function submitPatient(event) {
     event.preventDefault()
-    if (databaseStatus === 'connecting' || databaseStatus === 'error') return
+    if (databaseStatus === 'connecting' || databaseStatus === 'error' || databaseStatus === 'configuration-error') return
     const name = newPatient.name.trim()
     if (!name) return
     const parts = name.split(/\s+/)
@@ -209,18 +202,16 @@ function App() {
     if (databaseStatus === 'connected') {
       setIsSavingPatient(true)
       try {
-        const response = await fetch('/api/patients', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            full_name: record.name,
-            community: record.community,
-            program: record.program,
-          }),
-        })
-        const result = await response.json()
-        if (!response.ok) throw new Error(result.error || `Could not save patient (${response.status}).`)
-        setPatientList((current) => [patientFromRow(result), ...current])
+        const { data, error } = await supabase.from('demo_patients').insert({
+          full_name: record.name,
+          community: record.community,
+          program: record.program,
+          status: record.status,
+          initials: record.initials,
+          avatar_color: record.color,
+        }).select().single()
+        if (error) throw error
+        setPatientList((current) => [patientFromRow(data), ...current])
       } catch (error) {
         setDatabaseStatus('error')
         setDatabaseMessage(`Could not save patient: ${error instanceof Error ? error.message : 'Unknown connection error.'}`)
@@ -233,7 +224,7 @@ function App() {
     }
     setPatientModal(false)
     setNewPatient({ name: '', community: 'Northside', program: 'General care' })
-    setToast(databaseStatus === 'connected' ? `${name} saved to PostgreSQL` : `${name} added to this browser preview only`)
+    setToast(databaseStatus === 'connected' ? `${name} saved to Supabase` : `${name} added to this browser preview only`)
     window.setTimeout(() => setToast(''), 3200)
   }
 
@@ -264,12 +255,14 @@ function App() {
   }
 
   const databaseBannerText = databaseStatus === 'connected'
-    ? 'PostgreSQL connected · Demo records only. Do not enter real patient information.'
+    ? 'Supabase connected · Demo records only. Do not enter real patient information.'
     : databaseStatus === 'connecting'
-      ? 'Connecting to the PostgreSQL API…'
+      ? 'Connecting to Supabase…'
       : databaseStatus === 'error'
         ? databaseMessage
-        : 'PostgreSQL is not configured. Patient changes stay in browser memory and are lost on refresh.'
+        : databaseStatus === 'configuration-error'
+          ? supabaseConfigurationError
+          : 'Supabase is not configured. Patient changes stay in browser memory and are lost on refresh.'
 
   return (
     <div className="app-shell">
@@ -307,7 +300,7 @@ function App() {
           </div>
         </header>
 
-        <div className={`database-banner database-${databaseStatus}`} role={databaseStatus === 'error' ? 'alert' : 'status'}><span className="database-indicator" />{databaseBannerText}</div>
+        <div className={`database-banner database-${databaseStatus}`} role={databaseStatus === 'error' || databaseStatus === 'configuration-error' ? 'alert' : 'status'}><span className="database-indicator" />{databaseBannerText}</div>
         <div className="page-content">
           {active === 'Dashboard' && <>
             <div className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-dot" /> FRIDAY, OCTOBER 9, 2026</div><h1>Good morning, Esther <span className="wave">✳</span></h1><p className="page-subtitle">Here’s what’s happening in your community today.</p></div><button className="primary-button" type="button" onClick={() => setPatientModal(true)}><Icon name="plus" size={17} /> Add a patient</button></div>
@@ -334,7 +327,7 @@ function App() {
       </main>
 
       {mobileNav && <button className="mobile-scrim" type="button" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
-      {patientModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPatientModal(false) }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="patient-modal-title"><div className="modal-heading"><div><div className="eyebrow">PATIENT DIRECTORY</div><h2 id="patient-modal-title">Add a patient</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setPatientModal(false)}><Icon name="close" /></button></div><p className="modal-description">Create a new patient record for your community.</p><form className="patient-form" onSubmit={submitPatient}><label>Full name<input autoFocus required placeholder="e.g. Amina Yusuf" value={newPatient.name} onChange={(event) => setNewPatient({ ...newPatient, name: event.target.value })} /></label><label>Community<select value={newPatient.community} onChange={(event) => setNewPatient({ ...newPatient, community: event.target.value })}><option>Northside</option><option>Riverside</option><option>East Ward</option><option>Hillview</option></select></label><label>Care program<select value={newPatient.program} onChange={(event) => setNewPatient({ ...newPatient, program: event.target.value })}><option>General care</option><option>Maternal care</option><option>Child wellness</option><option>Hypertension</option><option>Diabetes care</option></select></label>      <div className="form-note"><Icon name="shield" size={15} /> Demo only. Do not enter real patient or health information.</div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setPatientModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={isSavingPatient || databaseStatus === 'connecting' || databaseStatus === 'error'}><Icon name="plus" size={16} />{isSavingPatient ? 'Saving…' : databaseStatus === 'connecting' ? 'Connecting…' : 'Create patient'}</button></div></form></section></div>}
+      {patientModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPatientModal(false) }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="patient-modal-title"><div className="modal-heading"><div><div className="eyebrow">PATIENT DIRECTORY</div><h2 id="patient-modal-title">Add a patient</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setPatientModal(false)}><Icon name="close" /></button></div><p className="modal-description">Create a new patient record for your community.</p><form className="patient-form" onSubmit={submitPatient}><label>Full name<input autoFocus required placeholder="e.g. Amina Yusuf" value={newPatient.name} onChange={(event) => setNewPatient({ ...newPatient, name: event.target.value })} /></label><label>Community<select value={newPatient.community} onChange={(event) => setNewPatient({ ...newPatient, community: event.target.value })}><option>Northside</option><option>Riverside</option><option>East Ward</option><option>Hillview</option></select></label><label>Care program<select value={newPatient.program} onChange={(event) => setNewPatient({ ...newPatient, program: event.target.value })}><option>General care</option><option>Maternal care</option><option>Child wellness</option><option>Hypertension</option><option>Diabetes care</option></select></label>            <div className="form-note"><Icon name="shield" size={15} /> Demo only. Do not enter real patient or health information.</div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setPatientModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={isSavingPatient || databaseStatus === 'connecting' || databaseStatus === 'error' || databaseStatus === 'configuration-error'}><Icon name="plus" size={16} />{isSavingPatient ? 'Saving…' : databaseStatus === 'connecting' ? 'Connecting…' : 'Create patient'}</button></div></form></section></div>}
       {toast && <div className="toast-message"><span>✓</span>{toast}</div>}
     </div>
   )
