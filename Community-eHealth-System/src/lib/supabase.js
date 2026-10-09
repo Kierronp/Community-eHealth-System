@@ -6,7 +6,7 @@ const hasSupabaseUrl = Boolean(supabaseUrl)
 const hasSupabaseAnonKey = Boolean(supabaseAnonKey)
 
 export const supabaseConfigured = hasSupabaseUrl && hasSupabaseAnonKey
-export const supabaseConfigurationError = hasSupabaseUrl !== hasSupabaseAnonKey
+export const supabaseConfigurationError = !hasSupabaseUrl || !hasSupabaseAnonKey
   ? 'Set both VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local, then restart the dev server.'
   : ''
 

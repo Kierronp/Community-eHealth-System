@@ -4,6 +4,119 @@
   min-height: 100vh;
 }
 
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+  color: #26352e;
+  background: #f5f8f5;
+  font-family: 'DM Sans', sans-serif;
+}
+
+.auth-card {
+  width: min(100%, 420px);
+  box-sizing: border-box;
+  padding: 32px;
+  border: 1px solid #e6ece7;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 16px 48px #26352e0d;
+}
+
+.auth-brand {
+  margin: 0 0 32px;
+}
+
+.auth-card h1 {
+  margin: 7px 0 8px;
+  font: 700 25px 'Manrope', sans-serif;
+  letter-spacing: -.7px;
+}
+
+.auth-description,
+.auth-footnote {
+  color: #78857d;
+  font-size: 12px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 15px;
+  margin-top: 22px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 6px;
+  color: #526158;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.auth-form input {
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 11px;
+  border: 1px solid #dfe7e1;
+  border-radius: 6px;
+  outline-color: #4d9b79;
+}
+
+.auth-form .primary-button {
+  justify-content: center;
+  margin-top: 3px;
+}
+
+.auth-error {
+  padding: 10px 12px;
+  border: 1px solid #f0dfc8;
+  border-radius: 6px;
+  color: #895b30;
+  background: #fff8ee;
+  font-size: 12px;
+}
+
+.auth-footnote {
+  margin: 20px 0 0;
+  line-height: 1.6;
+}
+
+.auth-link {
+  margin-top: 17px;
+  padding: 4px 0;
+  border: 0;
+  color: #398d69;
+  background: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.connected-overview {
+  max-width: 680px;
+  padding: 28px;
+  border: 1px solid #e6ece7;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.connected-overview h2 {
+  margin: 0 0 7px;
+  color: #26352e;
+  font: 700 19px 'Manrope', sans-serif;
+}
+
+.connected-overview p {
+  margin: 0;
+  color: #78857d;
+  line-height: 1.65;
+}
+
+.connected-overview strong {
+  color: #398d69;
+}
+
 button,
 input,
 select {
@@ -333,6 +446,29 @@ button {
 
 .topbar-actions {
   gap: 16px;
+}
+
+.organization-switcher {
+  max-width: 190px;
+  height: 32px;
+  padding: 0 24px 0 8px;
+  border: 1px solid #e7ece8;
+  border-radius: 6px;
+  color: #526158;
+  background: #fff;
+  font-size: 11px;
+}
+
+.sign-out-button {
+  padding: 6px 0;
+  border: 0;
+  color: #68766e;
+  background: transparent;
+  font-size: 11px;
+}
+
+.sign-out-button:hover {
+  color: #398d69;
 }
 
 .search-box {
@@ -1505,7 +1641,8 @@ tbody tr:hover {
 }
 
 .patient-form input,
-.patient-form select {
+.patient-form select,
+.patient-form textarea {
   height: 37px;
   box-sizing: border-box;
   padding: 0 10px;
@@ -1518,8 +1655,16 @@ tbody tr:hover {
   font-weight: 400;
 }
 
+.patient-form textarea {
+  height: auto;
+  min-height: 72px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
 .patient-form input:focus,
-.patient-form select:focus {
+.patient-form select:focus,
+.patient-form textarea:focus {
   border-color: #71aa88;
   box-shadow: 0 0 0 3px #3d926b18;
 }

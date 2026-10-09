@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase, supabaseConfigurationError, supabaseConfigured } from './lib/supabase.js'
 import './App.css'
 
@@ -12,97 +12,129 @@ const navigation = [
   { label: 'Inventory', icon: 'box' },
   { label: 'Referrals', icon: 'arrow' },
   { label: 'Reports', icon: 'chart' },
-  { label: 'Alerts', icon: 'bell', badge: '3' },
+  { label: 'Alerts', icon: 'bell' },
   { label: 'Users', icon: 'user' },
 ]
 
-const patients = [
-  { name: 'Amara Okafor', id: 'P-2048', age: '34', sex: 'Female', community: 'Northside', program: 'Maternal care', status: 'Active', initials: 'AO', color: 'lavender' },
-  { name: 'Daniel Mensah', id: 'P-2047', age: '58', sex: 'Male', community: 'Riverside', program: 'Hypertension', status: 'Follow-up', initials: 'DM', color: 'blue' },
-  { name: 'Grace Ndlovu', id: 'P-2046', age: '7', sex: 'Female', community: 'East Ward', program: 'Child wellness', status: 'Active', initials: 'GN', color: 'peach' },
-  { name: 'Joseph Kamau', id: 'P-2045', age: '42', sex: 'Male', community: 'Hillview', program: 'Diabetes care', status: 'Review due', initials: 'JK', color: 'mint' },
-  { name: 'Fatima Abdi', id: 'P-2044', age: '26', sex: 'Female', community: 'Northside', program: 'Antenatal care', status: 'Active', initials: 'FA', color: 'rose' },
-]
-
 function patientFromRow(row) {
+  const age = row.birth_date
+    ? Math.floor((Date.now() - new Date(`${row.birth_date}T00:00:00`).getTime()) / 31557600000)
+    : null
   return {
     name: row.full_name,
-    id: row.patient_id,
-    age: row.age ?? '—',
-    sex: row.sex ?? '—',
-    community: row.community,
-    program: row.program,
-    status: row.status,
-    initials: row.initials,
-    color: row.avatar_color,
+    id: row.patient_number,
+    age: age ?? '—',
+    sex: row.sex ? row.sex[0].toUpperCase() + row.sex.slice(1) : '—',
+    community: row.community?.name ?? '—',
+    program: row.care_program,
+    status: row.status ? row.status[0].toUpperCase() + row.status.slice(1) : '—',
+    initials: row.initials || row.full_name.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase(),
+    color: row.avatar_color || 'mint',
   }
 }
 
-const moduleDetails = {
+const workspaceConfig = {
   Families: {
+    table: 'families',
+    select: 'id, household_name, family_number, status, created_at, community:communities(name)',
     eyebrow: 'COMMUNITY CARE',
     description: 'Households and their linked patient records.',
-    stats: [['Registered families', '428', '+12 this month'], ['Members', '1,206', 'Across 6 communities'], ['Home visits due', '18', 'This week']],
-    columns: ['Family', 'Family ID', 'Community', 'Members', 'Last visit'],
-    rows: [['The Okafor household', 'F-0108', 'Northside', '4 members', 'Oct 08, 2026'], ['Mensah family', 'F-0107', 'Riverside', '3 members', 'Oct 07, 2026'], ['Ndlovu household', 'F-0106', 'East Ward', '5 members', 'Oct 05, 2026'], ['Kamau family', 'F-0105', 'Hillview', '2 members', 'Oct 04, 2026']],
+    columns: ['Family', 'Family ID', 'Community', 'Status'],
+    fields: [
+      { name: 'household_name', label: 'Household name', required: true },
+      { name: 'community_id', label: 'Community', type: 'select', source: 'communities' },
+    ],
+    map: (row) => [row.household_name, row.family_number, row.community?.name, row.status],
   },
   'QR ID': {
+    table: 'qr_ids',
+    order: 'issued_at',
+    select: 'id, issued_at, expires_at, revoked_at, patient:patients(full_name, patient_number)',
     eyebrow: 'PATIENT IDENTIFICATION',
-    description: 'Find a patient record and prepare a community health ID.',
-    stats: [['IDs issued', '1,084', '82% of registered patients'], ['Ready to print', '12', 'New this week'], ['Replacements', '6', 'Awaiting review']],
-    columns: ['Patient', 'Patient ID', 'Community', 'ID status', 'Issued'],
-    rows: [['Amara Okafor', 'P-2048', 'Northside', 'Ready', 'Oct 09, 2026'], ['Daniel Mensah', 'P-2047', 'Riverside', 'Issued', 'Oct 08, 2026'], ['Grace Ndlovu', 'P-2046', 'East Ward', 'Issued', 'Oct 07, 2026'], ['Joseph Kamau', 'P-2045', 'Hillview', 'Needs review', '—']],
+    description: 'Review issued patient identifiers.',
+    columns: ['Patient', 'Patient ID', 'Issued', 'Expires', 'Status'],
+    map: (row) => [row.patient?.full_name, row.patient?.patient_number, row.issued_at, row.expires_at, row.revoked_at ? 'Revoked' : 'Active'],
   },
   Vaccination: {
+    table: 'vaccination_records',
+    select: 'id, vaccine_name, dose_name, due_date, status, patient:patients(full_name)',
     eyebrow: 'IMMUNIZATION',
-    description: 'Track schedules, upcoming doses, and community coverage.',
-    stats: [['Coverage', '87.4%', '+3.2% this quarter'], ['Doses this month', '246', 'Across 4 clinics'], ['Upcoming doses', '32', 'Next 7 days']],
+    description: 'Track vaccination schedules and administered doses.',
     columns: ['Patient', 'Vaccine', 'Dose', 'Due date', 'Status'],
-    rows: [['Grace Ndlovu', 'Measles (MCV1)', 'Dose 1', 'Oct 10, 2026', 'Due soon'], ['Amina Yusuf', 'Penta', 'Dose 3', 'Oct 11, 2026', 'Scheduled'], ['Peter Otieno', 'Polio (OPV)', 'Dose 2', 'Oct 12, 2026', 'Scheduled'], ['Lina Banda', 'Measles (MCV2)', 'Dose 2', 'Oct 14, 2026', 'Scheduled']],
+    fields: [
+      { name: 'patient_id', label: 'Patient', type: 'select', source: 'patients', required: true },
+      { name: 'vaccine_name', label: 'Vaccine', required: true },
+      { name: 'dose_name', label: 'Dose', required: true },
+      { name: 'due_date', label: 'Due date', type: 'date' },
+    ],
+    map: (row) => [row.patient?.full_name, row.vaccine_name, row.dose_name, row.due_date, row.status],
   },
   Inventory: {
+    table: 'inventory_items',
+    select: 'id, item_code, name, category, unit, reorder_level, is_active',
     eyebrow: 'SUPPLY MANAGEMENT',
-    description: 'Keep track of essential medicines and clinic supplies.',
-    stats: [['Items in stock', '184', 'Across 3 facilities'], ['Low stock', '8', 'Needs attention'], ['Expiring soon', '3', 'Within 30 days']],
-    columns: ['Item', 'Category', 'Facility', 'Quantity', 'Stock status'],
-    rows: [['Amoxicillin 250mg', 'Antibiotics', 'Northside Clinic', '24 packs', 'Low stock'], ['Malaria rapid tests', 'Diagnostics', 'Riverside Clinic', '120 kits', 'In stock'], ['Paracetamol 500mg', 'Essential medicines', 'East Ward Clinic', '18 packs', 'Low stock'], ['ORS sachets', 'Essential medicines', 'Northside Clinic', '340 sachets', 'In stock']],
+    description: 'Manage inventory items and their reorder levels.',
+    columns: ['Item', 'Code', 'Category', 'Unit', 'Reorder level', 'Status'],
+    fields: [
+      { name: 'name', label: 'Item name', required: true },
+      { name: 'item_code', label: 'Item code' },
+      { name: 'category', label: 'Category' },
+      { name: 'unit', label: 'Unit' },
+      { name: 'reorder_level', label: 'Reorder level', type: 'number' },
+    ],
+    map: (row) => [row.name, row.item_code, row.category, row.unit, row.reorder_level, row.is_active ? 'Active' : 'Inactive'],
   },
   Referrals: {
+    table: 'referrals',
+    select: 'id, reason, priority, referred_at, follow_up_due, status, patient:patients(full_name)',
     eyebrow: 'CARE COORDINATION',
-    description: 'Follow referrals from community outreach to facility care.',
-    stats: [['Open referrals', '24', 'Across 5 facilities'], ['Completed this month', '38', '+8 from last month'], ['Awaiting follow-up', '9', 'Needs attention']],
-    columns: ['Patient', 'Referred to', 'Reason', 'Referred on', 'Status'],
-    rows: [['Daniel Mensah', 'Central Health Centre', 'Blood pressure review', 'Oct 08, 2026', 'Awaiting visit'], ['Joseph Kamau', 'County Hospital', 'Diabetes review', 'Oct 07, 2026', 'In progress'], ['Lina Banda', 'East Ward Clinic', 'Antenatal check', 'Oct 06, 2026', 'Completed'], ['Peter Otieno', 'Central Health Centre', 'Child wellness', 'Oct 04, 2026', 'Follow-up due']],
+    description: 'Coordinate patient referrals to facilities.',
+    columns: ['Patient', 'Reason', 'Priority', 'Referred on', 'Follow-up', 'Status'],
+    fields: [
+      { name: 'patient_id', label: 'Patient', type: 'select', source: 'patients', required: true },
+      { name: 'reason', label: 'Reason', required: true },
+      { name: 'priority', label: 'Priority', type: 'select', options: ['routine', 'urgent', 'emergency'] },
+      { name: 'follow_up_due', label: 'Follow-up due', type: 'date' },
+    ],
+    map: (row) => [row.patient?.full_name, row.reason, row.priority, row.referred_at, row.follow_up_due, row.status],
   },
   Reports: {
+    table: 'report_runs',
+    select: 'id, report_type, period_start, period_end, status, created_at',
     eyebrow: 'INSIGHTS & REPORTS',
-    description: 'A snapshot of community health activity and outcomes.',
-    stats: [['Patients reached', '1,284', '+8.4% this quarter'], ['Visits completed', '936', 'This quarter'], ['Follow-ups on time', '78%', '+5% this month']],
-    columns: ['Report', 'Category', 'Reporting period', 'Last updated', 'Format'],
-    rows: [['Monthly patient summary', 'Patient care', 'September 2026', 'Oct 01, 2026', 'PDF'], ['Vaccination coverage', 'Immunization', 'Q3 2026', 'Oct 02, 2026', 'PDF'], ['Medicine stock report', 'Inventory', 'October 2026', 'Oct 09, 2026', 'CSV'], ['Referral outcomes', 'Care coordination', 'Q3 2026', 'Oct 03, 2026', 'PDF']],
+    description: 'Request and track organization reports.',
+    columns: ['Report', 'Period start', 'Period end', 'Status', 'Requested'],
+    fields: [
+      { name: 'report_type', label: 'Report type', required: true },
+      { name: 'period_start', label: 'Period start', type: 'date' },
+      { name: 'period_end', label: 'Period end', type: 'date' },
+    ],
+    map: (row) => [row.report_type, row.period_start, row.period_end, row.status, row.created_at],
   },
   Alerts: {
+    table: 'alerts',
+    select: 'id, title, category, priority, due_at, status',
     eyebrow: 'ATTENTION NEEDED',
-    description: 'Important reminders for your community health team.',
-    stats: [['Open alerts', '3', 'Requires attention'], ['Resolved today', '8', 'Good work, team'], ['All alerts this month', '42', 'Across 6 communities']],
-    columns: ['Alert', 'Related to', 'Community', 'Created', 'Priority'],
-    rows: [['Low stock: Amoxicillin 250mg', 'Inventory', 'Northside', 'Today, 09:20', 'High'], ['Missed follow-up visit', 'Daniel Mensah · P-2047', 'Riverside', 'Today, 08:45', 'Medium'], ['Vaccine dose due in 2 days', 'Grace Ndlovu · P-2046', 'East Ward', 'Yesterday', 'Medium'], ['Referral confirmation received', 'Lina Banda · P-2038', 'East Ward', 'Oct 07, 2026', 'Resolved']],
+    description: 'Manage organization alerts and follow-up reminders.',
+    columns: ['Alert', 'Category', 'Priority', 'Due', 'Status'],
+    fields: [
+      { name: 'title', label: 'Alert title', required: true },
+      { name: 'category', label: 'Category', required: true },
+      { name: 'priority', label: 'Priority', type: 'select', options: ['low', 'medium', 'high', 'urgent'] },
+      { name: 'due_at', label: 'Due date', type: 'date' },
+      { name: 'description', label: 'Description', type: 'textarea' },
+    ],
+    map: (row) => [row.title, row.category, row.priority, row.due_at, row.status],
   },
   Users: {
+    table: 'organization_memberships',
+    select: 'user_id, role, status, created_at',
     eyebrow: 'TEAM ACCESS',
-    description: 'Manage the people supporting your community health programs.',
-    stats: [['Team members', '18', 'Across 4 roles'], ['Active today', '12', 'Of 18 members'], ['Invitations pending', '2', 'Awaiting response']],
-    columns: ['Team member', 'Role', 'Community', 'Last active', 'Access'],
-    rows: [['Esther Wanjiku', 'Community health worker', 'Northside', 'Today, 09:14', 'Active'], ['Samuel Boateng', 'Nurse', 'Riverside', 'Today, 08:52', 'Active'], ['Miriam Phiri', 'Program coordinator', 'All communities', 'Yesterday', 'Active'], ['David Osei', 'Community health worker', 'East Ward', 'Oct 07, 2026', 'Active']],
+    description: 'Organization membership and access roles.',
+    columns: ['User ID', 'Role', 'Status', 'Joined'],
+    map: (row) => [row.user_id, row.role, row.status, row.created_at],
   },
 }
-
-const activities = [
-  { icon: 'users', text: 'New patient registered', detail: 'Amara Okafor · Northside', time: '9:42 AM', color: 'mint' },
-  { icon: 'shield', text: 'Vaccination completed', detail: 'Grace Ndlovu · MCV1', time: '9:18 AM', color: 'blue' },
-  { icon: 'arrow', text: 'Referral updated', detail: 'Daniel Mensah · Riverside', time: '8:56 AM', color: 'peach' },
-  { icon: 'box', text: 'Stock running low', detail: 'Amoxicillin 250mg · Northside', time: '8:30 AM', color: 'rose' },
-]
 
 function Icon({ name, size = 18 }) {
   const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }
@@ -140,49 +172,173 @@ function StatusPill({ children }) {
   return <span className={`status-pill status-${kind}`}><span />{children}</span>
 }
 
+function AuthFrame({ children }) {
+  return (
+    <main className="auth-page">
+      <section className="auth-card">
+        <a className="brand auth-brand" href="#" onClick={(event) => event.preventDefault()}>
+          <span className="brand-mark"><Icon name="shield" size={21} /></span>
+          <span className="brand-copy"><strong>care<span>circle</span></strong><small>COMMUNITY HEALTH</small></span>
+        </a>
+        {children}
+      </section>
+    </main>
+  )
+}
+
 function App() {
   const [active, setActive] = useState('Dashboard')
   const [query, setQuery] = useState('')
   const [showNotifications, setShowNotifications] = useState(false)
   const [mobileNav, setMobileNav] = useState(false)
   const [chatInput, setChatInput] = useState('')
-  const [messages, setMessages] = useState([{ from: 'assistant', text: 'Hi Esther! I can help you find patient records, summarize your community activity, or navigate the system. What would you like to work on?' }])
+  const [messages, setMessages] = useState([{ from: 'assistant', text: 'I can help you navigate the workspaces. Choose a section from the sidebar to get started.' }])
   const [patientModal, setPatientModal] = useState(false)
-  const [newPatient, setNewPatient] = useState({ name: '', community: 'Northside', program: 'General care' })
-  const [patientList, setPatientList] = useState(patients)
-  const [isSavingPatient, setIsSavingPatient] = useState(false)
-  const [databaseStatus, setDatabaseStatus] = useState(supabaseConfigured ? 'connecting' : supabaseConfigurationError ? 'configuration-error' : 'local')
+  const [recordModal, setRecordModal] = useState(false)
+  const [workspaceData, setWorkspaceData] = useState({})
+  const [isSavingRecord, setIsSavingRecord] = useState(false)
+  const [recordError, setRecordError] = useState('')
+  const [databaseStatus, setDatabaseStatus] = useState(supabaseConfigured ? 'connecting' : 'configuration-error')
   const [databaseMessage, setDatabaseMessage] = useState(supabaseConfigurationError)
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(supabaseConfigured)
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [organizations, setOrganizations] = useState([])
+  const [organizationId, setOrganizationId] = useState('')
+  const [organizationName, setOrganizationName] = useState('')
+  const [communities, setCommunities] = useState([])
+  const [facilities, setFacilities] = useState([])
   const [toast, setToast] = useState('')
 
+  const patientList = useMemo(() => (workspaceData.patients ?? []).map(patientFromRow), [workspaceData.patients])
   const matchingPatients = useMemo(() => patientList.filter((patient) => Object.values(patient).some((value) => String(value).toLowerCase().includes(query.toLowerCase()))), [patientList, query])
-  const activeModule = moduleDetails[active]
+  const activeModule = workspaceConfig[active]
+  const activeRows = workspaceData[activeModule?.table] ?? []
+  const patientOptions = workspaceData.patients ?? []
+
+  const loadOrganizationData = useCallback(async (isCurrent = () => true) => {
+    if (!supabase || !organizationId) return
+    const [patientResult, communityResult, facilityResult, ...moduleResults] = await Promise.all([
+      supabase.from('patients')
+        .select('id, patient_number, full_name, birth_date, sex, care_program, status, initials, avatar_color, community:communities(name)')
+        .eq('organization_id', organizationId)
+        .order('created_at', { ascending: false }),
+      supabase.from('communities')
+        .select('id, name')
+        .eq('organization_id', organizationId)
+        .eq('is_active', true)
+        .order('name'),
+      supabase.from('facilities')
+        .select('id, name')
+        .eq('organization_id', organizationId)
+        .eq('is_active', true)
+        .order('name'),
+      ...Object.values(workspaceConfig).map(({ table, select, order = 'created_at' }) => supabase.from(table)
+        .select(select)
+        .eq('organization_id', organizationId)
+        .order(order, { ascending: false })),
+    ])
+    const results = [patientResult, communityResult, facilityResult, ...moduleResults]
+    const failedResult = results.find((result) => result.error)
+    if (failedResult?.error) throw failedResult.error
+    if (!isCurrent()) return
+    const nextData = { patients: patientResult.data ?? [] }
+    Object.values(workspaceConfig).forEach(({ table }, index) => {
+      nextData[table] = moduleResults[index].data ?? []
+    })
+    setWorkspaceData(nextData)
+    setCommunities(communityResult.data ?? [])
+    setFacilities(facilityResult.data ?? [])
+    setDatabaseStatus('connected')
+    setDatabaseMessage('')
+  }, [organizationId])
 
   useEffect(() => {
-    if (!supabaseConfigured) return undefined
+    if (!supabaseConfigured || !supabase) return undefined
 
     let cancelled = false
-    async function loadPatients() {
-      try {
-        const { data, error } = await supabase.from('demo_patients').select('*').order('created_at', { ascending: false })
-        if (cancelled) return
-        if (error) throw error
-        setPatientList(data.map(patientFromRow))
-        setDatabaseStatus('connected')
-        setDatabaseMessage('')
-      } catch (error) {
-        if (cancelled) return
-        setDatabaseStatus('error')
-        setDatabaseMessage(`Could not load Supabase demo patients: ${error instanceof Error ? error.message : 'Unknown connection error.'}`)
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (cancelled) return
+      if (error) {
+        setAuthError(`Could not restore your sign-in: ${error.message}`)
+        setAuthLoading(false)
+        return
       }
-    }
-
-    loadPatients()
+      setSession(data.session)
+      setDatabaseStatus(data.session ? 'connecting' : 'authentication-required')
+      setAuthLoading(false)
+    }).catch((error) => {
+      if (cancelled) return
+      setAuthError(`Could not restore your sign-in: ${error instanceof Error ? error.message : 'Unknown authentication error.'}`)
+      setAuthLoading(false)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+      setDatabaseStatus(nextSession ? 'connecting' : 'authentication-required')
+      setAuthLoading(false)
+      setAuthError('')
+      if (!nextSession) {
+        setOrganizations([])
+        setOrganizationId('')
+        setCommunities([])
+        setFacilities([])
+        setWorkspaceData({})
+      }
+    })
 
     return () => {
       cancelled = true
+      subscription.unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    if (!supabaseConfigured || !supabase || authLoading) return undefined
+    if (!session) return undefined
+    let cancelled = false
+    supabase.rpc('my_organizations').then(({ data, error }) => {
+      if (cancelled) return
+      if (error) {
+        setDatabaseStatus('error')
+        setDatabaseMessage(`Could not load your organization access: ${error.message}`)
+        return
+      }
+      const rows = data ?? []
+      setOrganizations(rows)
+      if (rows.length === 0) {
+        setOrganizationId('')
+        setDatabaseStatus('no-organization')
+        return
+      }
+      setOrganizationId((current) => rows.some((organization) => organization.organization_id === current)
+        ? current
+        : rows[0].organization_id)
+    }).catch((error) => {
+      if (cancelled) return
+      setDatabaseStatus('error')
+      setDatabaseMessage(`Could not load your organization access: ${error instanceof Error ? error.message : 'Unknown connection error.'}`)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [session, authLoading])
+
+  useEffect(() => {
+    if (!supabaseConfigured || !supabase || !session || !organizationId) return undefined
+
+    let cancelled = false
+    Promise.resolve().then(() => loadOrganizationData(() => !cancelled)).catch((error) => {
+      if (cancelled) return
+      setDatabaseStatus('error')
+      setDatabaseMessage(`Could not load organization data: ${error instanceof Error ? error.message : 'Unknown connection error.'}`)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [loadOrganizationData, organizationId, session])
 
   function navigate(label) {
     setActive(label)
@@ -192,40 +348,66 @@ function App() {
 
   async function submitPatient(event) {
     event.preventDefault()
-    if (databaseStatus === 'connecting' || databaseStatus === 'error' || databaseStatus === 'configuration-error') return
-    const name = newPatient.name.trim()
+    if (!supabase || !organizationId || databaseStatus !== 'connected') return
+    const formData = new FormData(event.currentTarget)
+    const name = String(formData.get('full_name') ?? '').trim()
     if (!name) return
-    const parts = name.split(/\s+/)
-    const initials = parts.slice(0, 2).map((part) => part[0]).join('').toUpperCase()
-    const nextId = patientList.reduce((highest, patient) => Math.max(highest, Number(patient.id.replace('P-', '')) || 0), 2048) + 1
-    const record = { name, id: `P-${nextId}`, age: '—', sex: '—', community: newPatient.community, program: newPatient.program, status: 'Active', initials, color: 'mint' }
-    if (databaseStatus === 'connected') {
-      setIsSavingPatient(true)
-      try {
-        const { data, error } = await supabase.from('demo_patients').insert({
-          full_name: record.name,
-          community: record.community,
-          program: record.program,
-          status: record.status,
-          initials: record.initials,
-          avatar_color: record.color,
-        }).select().single()
-        if (error) throw error
-        setPatientList((current) => [patientFromRow(data), ...current])
-      } catch (error) {
-        setDatabaseStatus('error')
-        setDatabaseMessage(`Could not save patient: ${error instanceof Error ? error.message : 'Unknown connection error.'}`)
-        return
-      } finally {
-        setIsSavingPatient(false)
-      }
-    } else {
-      setPatientList((current) => [record, ...current])
+    const initials = name.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase()
+    const record = {
+      organization_id: organizationId,
+      full_name: name,
+      birth_date: formData.get('birth_date') || null,
+      sex: formData.get('sex') || null,
+      community_id: formData.get('community_id') || null,
+      care_program: String(formData.get('care_program') || 'General care').trim(),
+      initials,
     }
-    setPatientModal(false)
-    setNewPatient({ name: '', community: 'Northside', program: 'General care' })
-    setToast(databaseStatus === 'connected' ? `${name} saved to Supabase` : `${name} added to this browser preview only`)
-    window.setTimeout(() => setToast(''), 3200)
+    setIsSavingRecord(true)
+    setRecordError('')
+    try {
+      const { error } = await supabase.from('patients').insert(record)
+      if (error) throw error
+      await loadOrganizationData()
+      setPatientModal(false)
+      setToast('Patient saved to Supabase')
+      window.setTimeout(() => setToast(''), 3200)
+    } catch (error) {
+      setRecordError(`Could not save patient: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
+    } finally {
+      setIsSavingRecord(false)
+    }
+  }
+
+  async function submitWorkspaceRecord(event) {
+    event.preventDefault()
+    if (!supabase || !organizationId || !activeModule || databaseStatus !== 'connected') return
+    const formData = new FormData(event.currentTarget)
+    const record = { organization_id: organizationId }
+    for (const field of activeModule.fields ?? []) {
+      const value = formData.get(field.name)
+      if (value === null || value === '') continue
+      record[field.name] = field.type === 'number' ? Number(value) : value
+    }
+    setIsSavingRecord(true)
+    setRecordError('')
+    try {
+      const { error } = await supabase.from(activeModule.table).insert(record)
+      if (error) throw error
+      await loadOrganizationData()
+      setRecordModal(false)
+      setToast(`${active.slice(0, -1) || active} saved to Supabase`)
+      window.setTimeout(() => setToast(''), 3200)
+    } catch (error) {
+      setRecordError(`Could not save record: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
+    } finally {
+      setIsSavingRecord(false)
+    }
+  }
+
+  function openRecordModal() {
+    setRecordError('')
+    if (active === 'Patients') setPatientModal(true)
+    else setRecordModal(true)
   }
 
   function sendMessage(event) {
@@ -233,36 +415,128 @@ function App() {
     const text = chatInput.trim()
     if (!text) return
     const question = text.toLowerCase()
-    let response = 'I can help you navigate this demo workspace, find a section, or summarize the sample dashboard. For patient-specific care decisions, please consult a qualified health professional and verify information in the official patient record.'
-    if (/how many|total patients|registered patients/.test(question)) {
-      response = `The dashboard shows 1,284 total patients in its sample data. The patient directory currently contains ${patientList.length} demo records.`
-    } else if (/attention|today|follow.?up|alerts/.test(question)) {
-      response = 'The dashboard highlights three sample items: low Amoxicillin stock at Northside Clinic, a referral follow-up for Daniel Mensah, and an upcoming vaccine dose for Grace Ndlovu.'
-    } else if (/vaccin/.test(question)) {
-      response = 'The dashboard sample shows 87.4% vaccination coverage, up 3.2%. Open Vaccination in the sidebar to review example upcoming doses.'
-    } else if (/inventory|stock|medicine/.test(question)) {
-      response = 'The demo inventory shows 8 low-stock items and 3 items expiring soon. Open Inventory to review the sample stock list.'
-    }
+    const destination = navigation.find((item) => question.includes(item.label.toLowerCase()))
+    const response = destination
+      ? `Open ${destination.label} from the sidebar to view its organization records.`
+      : 'I can help you find a workspace. Use the sidebar to open patients, families, vaccination, inventory, referrals, reports, alerts, or users.'
     setMessages((current) => [...current, { from: 'user', text }, { from: 'assistant', text: response }])
     setChatInput('')
   }
 
   function handlePrimaryAction() {
-    if (active === 'Patients') setPatientModal(true)
-    else if (active === 'Dashboard') setPatientModal(true)
-    else setToast(`${active} workspace is ready to explore`)
-    if (active !== 'Patients' && active !== 'Dashboard') window.setTimeout(() => setToast(''), 2800)
+    openRecordModal()
+  }
+
+  async function signIn(event) {
+    event.preventDefault()
+    if (!supabase) return
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword })
+      if (error) setAuthError(`Sign-in failed: ${error.message}`)
+    } catch (error) {
+      setAuthError(`Sign-in failed: ${error instanceof Error ? error.message : 'Unknown authentication error.'}`)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  async function createOrganization(event) {
+    event.preventDefault()
+    if (!supabase) return
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const { error } = await supabase.rpc('create_my_organization', { p_name: organizationName.trim() })
+      if (error) throw error
+      const { data, error: loadError } = await supabase.rpc('my_organizations')
+      if (loadError) throw loadError
+      const rows = data ?? []
+      setOrganizations(rows)
+      setOrganizationId(rows[0]?.organization_id ?? '')
+      setOrganizationName('')
+      setDatabaseStatus(rows.length ? 'connecting' : 'no-organization')
+    } catch (error) {
+      setAuthError(`Could not create organization: ${error instanceof Error ? error.message : 'Unknown database error.'}`)
+      setAuthBusy(false)
+      return
+    }
+    setAuthBusy(false)
+  }
+
+  async function signOut() {
+    if (!supabase) return
+    try {
+      const { error } = await supabase.auth.signOut()
+      if (error) setAuthError(`Could not sign out: ${error.message}`)
+    } catch (error) {
+      setAuthError(`Could not sign out: ${error instanceof Error ? error.message : 'Unknown authentication error.'}`)
+    }
+  }
+
+  if (!supabaseConfigured) {
+    return <AuthFrame>
+      <div className="eyebrow">SUPABASE SETUP</div>
+      <h1>Connect your database</h1>
+      <p className="auth-description">Add your Supabase project URL and publishable/anon key to <code>.env.local</code>, then restart the development server. This app does not use preview records.</p>
+      <p className="auth-footnote">Apply <code>supabase/schema.sql</code> in your project's SQL Editor before signing in.</p>
+      {supabaseConfigurationError && <p className="auth-error" role="alert">{supabaseConfigurationError}</p>}
+    </AuthFrame>
+  }
+
+  if (supabaseConfigured && authLoading) {
+    return <AuthFrame><p>Restoring your secure session…</p></AuthFrame>
+  }
+  if (supabaseConfigured && !session) {
+    return <AuthFrame>
+      <div className="eyebrow">SECURE WORKSPACE</div>
+      <h1>Sign in to CareCircle</h1>
+      <p className="auth-description">Use the email and password provided by your organization administrator.</p>
+      {authError && <p className="auth-error" role="alert">{authError}</p>}
+      <form className="auth-form" onSubmit={signIn}>
+        <label>Email address<input type="email" autoComplete="username" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
+        <label>Password<input type="password" autoComplete="current-password" required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
+        <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Signing in…' : 'Sign in'}</button>
+      </form>
+      <p className="auth-footnote">Accounts are created by an administrator in Supabase. Public sign-up is disabled.</p>
+    </AuthFrame>
+  }
+  if (supabaseConfigured && session && (databaseStatus === 'connecting' || databaseStatus === 'authentication-required' || (!organizationId && databaseStatus !== 'no-organization' && databaseStatus !== 'error'))) {
+    return <AuthFrame><p>Loading your organization data…</p></AuthFrame>
+  }
+  if (supabaseConfigured && session && databaseStatus === 'no-organization') {
+    return <AuthFrame>
+      <div className="eyebrow">FIRST-TIME SETUP</div>
+      <h1>Create your organization</h1>
+      <p className="auth-description">This account does not yet belong to an organization. Creating one makes you its owner; the new organization starts empty.</p>
+      {authError && <p className="auth-error" role="alert">{authError}</p>}
+      <form className="auth-form" onSubmit={createOrganization}>
+        <label>Organization name<input required minLength={2} maxLength={120} value={organizationName} onChange={(event) => setOrganizationName(event.target.value)} /></label>
+        <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Creating…' : 'Create organization'}</button>
+      </form>
+      <button className="auth-link" type="button" onClick={signOut}>Sign out</button>
+    </AuthFrame>
+  }
+  if (supabaseConfigured && session && databaseStatus === 'error') {
+    return <AuthFrame>
+      <div className="eyebrow">WORKSPACE UNAVAILABLE</div>
+      <h1>Could not load your data</h1>
+      <p className="auth-error" role="alert">{databaseMessage}</p>
+      <p className="auth-description">Confirm that the database schema has been applied and your account has active organization access.</p>
+      <button className="auth-link" type="button" onClick={signOut}>Sign out</button>
+    </AuthFrame>
   }
 
   const databaseBannerText = databaseStatus === 'connected'
-    ? 'Supabase connected · Demo records only. Do not enter real patient information.'
+    ? 'Supabase connected · Workspace records are scoped to the selected organization.'
     : databaseStatus === 'connecting'
       ? 'Connecting to Supabase…'
       : databaseStatus === 'error'
         ? databaseMessage
         : databaseStatus === 'configuration-error'
           ? supabaseConfigurationError
-          : 'Supabase is not configured. Patient changes stay in browser memory and are lost on refresh.'
+          : 'Connect Supabase to load your organization records.'
 
   return (
     <div className="app-shell">
@@ -282,7 +556,7 @@ function App() {
         </nav>
         <div className="sidebar-bottom">
           <div className="help-card"><div className="help-icon"><Icon name="sparkles" size={16} /></div><strong>Need a hand?</strong><p>Visit the help center for tips and guides.</p><button type="button" onClick={() => navigate('AI Assistant')}>Get support <Icon name="chevron" size={14} /></button></div>
-          <button className="profile-button" type="button" onClick={() => navigate('Users')}><Avatar initials="EW" color="mint" small /><span className="profile-copy"><strong>Esther Wanjiku</strong><small>Community health worker</small></span><span className="profile-dots">···</span></button>
+          <button className="profile-button" type="button" onClick={() => navigate('Users')}><Avatar initials={session?.user?.email?.slice(0, 2).toUpperCase() ?? 'U'} color="mint" small /><span className="profile-copy"><strong>{session?.user?.email}</strong><small>{organizations.find((organization) => organization.organization_id === organizationId)?.member_role}</small></span><span className="profile-dots">···</span></button>
         </div>
       </aside>
 
@@ -291,56 +565,62 @@ function App() {
           <button className="mobile-menu icon-button" aria-label="Open navigation" type="button" onClick={() => setMobileNav(!mobileNav)}><Icon name="menu" /></button>
           <div className="breadcrumbs"><span>Workspace</span><Icon name="chevron" size={14} /><strong>{active}</strong></div>
           <div className="topbar-actions">
-            <label className="search-box"><Icon name="search" size={17} /><input aria-label="Search patients" placeholder="Search anything..." value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>⌘ K</kbd></label>
+            <label className="search-box"><Icon name="search" size={17} /><input aria-label={`Search ${active.toLowerCase()}`} placeholder="Search records..." value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>⌘ K</kbd></label>
             <div className="notification-wrap">
-              <button className={`icon-button notification-button${showNotifications ? ' icon-button-active' : ''}`} type="button" aria-label="Show notifications" onClick={() => setShowNotifications(!showNotifications)}><Icon name="bell" size={19} /><span className="notification-dot" /></button>
-              {showNotifications && <div className="notification-popover"><div className="popover-heading"><strong>Notifications</strong><span>3 new</span></div><p><b>Low stock alert</b><br />Amoxicillin is running low at Northside Clinic.</p><p><b>Follow-up due</b><br />Daniel Mensah is due for a visit.</p><p><b>Vaccine reminder</b><br />Grace Ndlovu’s next dose is coming up.</p></div>}
+              <button className={`icon-button notification-button${showNotifications ? ' icon-button-active' : ''}`} type="button" aria-label="Show notifications" onClick={() => setShowNotifications(!showNotifications)}><Icon name="bell" size={19} />{(workspaceData.alerts ?? []).some((alert) => alert.status === 'open') && <span className="notification-dot" />}</button>
+              {showNotifications && <div className="notification-popover"><div className="popover-heading"><strong>Open alerts</strong><span>{(workspaceData.alerts ?? []).filter((alert) => alert.status === 'open').length}</span></div>{(workspaceData.alerts ?? []).filter((alert) => alert.status === 'open').slice(0, 5).map((alert) => <p key={alert.id}><b>{alert.title}</b><br />{alert.category} · {alert.priority}</p>)}{!(workspaceData.alerts ?? []).some((alert) => alert.status === 'open') && <p>No open alerts.</p>}</div>}
             </div>
-            <span className="topbar-divider" /><Avatar initials="EW" color="mint" small />
+            <span className="topbar-divider" />
+            {supabaseConfigured && organizations.length > 1 && <select className="organization-switcher" aria-label="Select organization" value={organizationId} onChange={(event) => { setDatabaseStatus('connecting'); setWorkspaceData({}); setCommunities([]); setFacilities([]); setOrganizationId(event.target.value) }}>{organizations.map((organization) => <option key={organization.organization_id} value={organization.organization_id}>{organization.organization_name}</option>)}</select>}
+            {supabaseConfigured ? <button className="sign-out-button" type="button" onClick={signOut}>Sign out</button> : <Avatar initials="EW" color="mint" small />}
           </div>
         </header>
 
         <div className={`database-banner database-${databaseStatus}`} role={databaseStatus === 'error' || databaseStatus === 'configuration-error' ? 'alert' : 'status'}><span className="database-indicator" />{databaseBannerText}</div>
         <div className="page-content">
           {active === 'Dashboard' && <>
-            <div className="welcome-row"><div><div className="eyebrow"><span className="eyebrow-dot" /> FRIDAY, OCTOBER 9, 2026</div><h1>Good morning, Esther <span className="wave">✳</span></h1><p className="page-subtitle">Here’s what’s happening in your community today.</p></div><button className="primary-button" type="button" onClick={() => setPatientModal(true)}><Icon name="plus" size={17} /> Add a patient</button></div>
-            <section className="stats-grid" aria-label="Community health overview">
-              <article className="stat-card"><div className="stat-top"><span className="stat-icon stat-icon-green"><Icon name="users" size={18} /></span><span className="stat-trend"><Icon name="arrowUp" size={13} /> 8.2%</span></div><p>Total patients</p><strong>1,284</strong><small>vs. last month</small><div className="sparkline spark-green"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div></article>
-              <article className="stat-card"><div className="stat-top"><span className="stat-icon stat-icon-blue"><Icon name="calendar" size={18} /></span><span className="stat-trend"><Icon name="arrowUp" size={13} /> 12.5%</span></div><p>Visits this month</p><strong>936</strong><small>vs. last month</small><div className="sparkline spark-blue"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div></article>
-              <article className="stat-card"><div className="stat-top"><span className="stat-icon stat-icon-purple"><Icon name="shield" size={18} /></span><span className="stat-trend"><Icon name="arrowUp" size={13} /> 3.2%</span></div><p>Vaccination coverage</p><strong>87.4<span className="stat-unit">%</span></strong><small>Across your communities</small><div className="sparkline spark-purple"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div></article>
-              <article className="stat-card"><div className="stat-top"><span className="stat-icon stat-icon-orange"><Icon name="arrow" size={18} /></span><span className="stat-neutral">5 need follow-up</span></div><p>Active referrals</p><strong>24</strong><small>9 awaiting follow-up</small><div className="sparkline spark-orange"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div></article>
+            <div className="welcome-row"><div><div className="eyebrow">ORGANIZATION OVERVIEW</div><h1>{organizations.find((organization) => organization.organization_id === organizationId)?.organization_name ?? 'Workspace'}</h1><p className="page-subtitle">Live records from your selected organization.</p></div><button className="primary-button" type="button" onClick={() => navigate('Patients')}><Icon name="users" size={17} /> View patients</button></div>
+            <section className="stats-grid" aria-label="Organization records">
+              {[['Patients', patientList.length], ['Families', (workspaceData.families ?? []).length], ['Open referrals', (workspaceData.referrals ?? []).filter((row) => row.status === 'open').length], ['Open alerts', (workspaceData.alerts ?? []).filter((row) => row.status === 'open').length]].map(([label, count]) => <article className="stat-card" key={label}><p>{label}</p><strong>{count.toLocaleString()}</strong></article>)}
             </section>
-            <section className="dashboard-grid">
-              <article className="panel coverage-panel"><div className="panel-heading"><div><h2>Community overview</h2><p>Patient reach across your communities</p></div><button className="select-button" type="button">This month <Icon name="chevron" size={14} /></button></div><div className="chart-summary"><strong>1,284 <span>patients reached</span></strong><span className="chart-change"><Icon name="arrowUp" size={13} /> 8.2% <span>vs last month</span></span></div><div className="chart-wrap"><div className="chart-y-labels"><span>1,500</span><span>1,000</span><span>500</span><span>0</span></div><div className="chart-area"><div className="chart-gridline grid-one" /><div className="chart-gridline grid-two" /><div className="chart-gridline grid-three" /><div className="chart-gridline grid-four" /><svg className="chart-svg" viewBox="0 0 650 160" preserveAspectRatio="none" role="img" aria-label="Patient reach increased steadily over the last six months"><defs><linearGradient id="chart-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#45ad82" stopOpacity=".2" /><stop offset="100%" stopColor="#45ad82" stopOpacity="0" /></linearGradient></defs><path d="M0 132 C45 124 48 118 88 120 S145 104 174 109 S226 88 260 96 S318 81 350 84 S407 60 435 69 S495 50 522 55 S580 35 610 42 S638 24 650 22 L650 160 L0 160 Z" fill="url(#chart-fill)" /><path d="M0 132 C45 124 48 118 88 120 S145 104 174 109 S226 88 260 96 S318 81 350 84 S407 60 435 69 S495 50 522 55 S580 35 610 42 S638 24 650 22" fill="none" stroke="#3a9b73" strokeWidth="3" vectorEffect="non-scaling-stroke" /><circle cx="650" cy="22" r="5" fill="#fff" stroke="#3a9b73" strokeWidth="3" vectorEffect="non-scaling-stroke" /></svg><div className="chart-x-labels"><span>May</span><span>Jun</span><span>Jul</span><span>Aug</span><span>Sep</span><span>Oct</span></div></div></div><div className="chart-legend"><span><i className="legend-dot" /> Patients reached</span><span>Updated today at 9:00 AM</span></div></article>
-              <article className="panel tasks-panel"><div className="panel-heading"><div><h2>Needs your attention</h2><p>A few things to follow up on</p></div><span className="attention-count">3</span></div><button className="task-item" type="button" onClick={() => navigate('Inventory')}><span className="task-icon task-orange"><Icon name="box" size={17} /></span><span className="task-copy"><strong>Low medicine stock</strong><small>Amoxicillin · Northside Clinic</small></span><Icon name="chevron" size={16} /></button><button className="task-item" type="button" onClick={() => navigate('Referrals')}><span className="task-icon task-blue"><Icon name="arrow" size={17} /></span><span className="task-copy"><strong>Referral follow-up due</strong><small>Daniel Mensah · Riverside</small></span><Icon name="chevron" size={16} /></button><button className="task-item" type="button" onClick={() => navigate('Vaccination')}><span className="task-icon task-purple"><Icon name="shield" size={17} /></span><span className="task-copy"><strong>Vaccination coming up</strong><small>Grace Ndlovu · in 2 days</small></span><Icon name="chevron" size={16} /></button><button className="view-all-button" type="button" onClick={() => navigate('Alerts')}>View all alerts <Icon name="chevron" size={14} /></button></article>
-            </section>
-            <section className="panel activity-panel"><div className="panel-heading"><div><h2>Recent activity</h2><p>The latest updates from your community team</p></div><button className="text-button" type="button" onClick={() => navigate('Reports')}>View reports <Icon name="chevron" size={14} /></button></div><div className="activity-list">{activities.map((activity) => <div className="activity-row" key={activity.text}><span className={`activity-icon activity-${activity.color}`}><Icon name={activity.icon} size={16} /></span><div className="activity-copy"><strong>{activity.text}</strong><small>{activity.detail}</small></div><span className="activity-time"><Icon name="clock" size={13} />{activity.time}</span></div>)}</div></section>
-            <div className="demo-note"><span className="demo-indicator" /> Demo workspace <span>Sample data for preview only · Not for clinical decision-making</span></div>
+            <section className="connected-overview"><h2>Your organization data</h2><p>Records entered in each workspace are saved in Supabase and protected by organization-level access policies.</p></section>
           </>}
 
-          {active === 'Patients' && <><div className="welcome-row"><div><div className="eyebrow">PATIENT DIRECTORY</div><h1>Patients</h1><p className="page-subtitle">Manage and follow up with people in your community.</p></div><button className="primary-button" type="button" onClick={() => setPatientModal(true)}><Icon name="plus" size={17} /> Add a patient</button></div><div className="module-stats">{[['Total patients', patientList.length.toLocaleString(), 'Registered in workspace'], ['Active care plans', '842', 'Across all programs'], ['Follow-ups due', '18', 'In the next 7 days']].map(([label, value, note]) => <div className="module-stat" key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></div>)}</div><PatientTable patients={matchingPatients} query={query} onSelect={(patient) => setToast(`${patient.name} · ${patient.id}`)} /></>}
+          {active === 'Patients' && <><div className="welcome-row"><div><div className="eyebrow">PATIENT DIRECTORY</div><h1>Patients</h1><p className="page-subtitle">Manage and follow up with people in your community.</p></div><button className="primary-button" type="button" onClick={openRecordModal}><Icon name="plus" size={17} /> Add a patient</button></div><div className="module-stats"><div className="module-stat"><span>Total patients</span><strong>{patientList.length.toLocaleString()}</strong><small>In this organization</small></div></div><PatientTable patients={matchingPatients} query={query} onSelect={(patient) => setToast(`${patient.name} · ${patient.id}`)} /></>}
 
-          {active === 'AI Assistant' && <><div className="welcome-row"><div><div className="eyebrow">YOUR COMMUNITY HEALTH COPILOT</div><h1>AI Assistant</h1><p className="page-subtitle">A helpful guide to your workspace and community health data.</p></div></div><div className="assistant-layout"><section className="panel chat-panel"><div className="chat-header"><span className="assistant-avatar"><Icon name="sparkles" size={20} /></span><div><strong>CareCircle Assistant</strong><small><span className="online-dot" /> Ready to help</small></div><span className="demo-tag">DEMO</span></div><div className="chat-messages">{messages.map((message, index) => <div className={`chat-message message-${message.from}`} key={`${message.from}-${index}`}>{message.from === 'assistant' && <span className="message-avatar"><Icon name="sparkles" size={14} /></span>}<p>{message.text}</p></div>)}</div><div className="suggestions"><span>Try asking</span>{['How many patients are registered?', 'What needs attention today?'].map((suggestion) => <button type="button" key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>)}</div><form className="chat-form" onSubmit={sendMessage}><input aria-label="Message the AI assistant" placeholder="Ask a question about your workspace..." value={chatInput} onChange={(event) => setChatInput(event.target.value)} /><button aria-label="Send message" type="submit"><Icon name="arrowUp" size={17} /></button></form><p className="chat-disclaimer">AI responses are for navigation support only. Verify health information with a qualified professional.</p></section><aside className="assistant-side"><div className="panel assistant-info"><span className="info-icon"><Icon name="sparkles" /></span><h3>What I can help with</h3><p>Get quick summaries, find the right workspace, or understand your dashboard at a glance.</p><div className="capability"><Icon name="search" size={16} /><span>Find patient records</span></div><div className="capability"><Icon name="chart" size={16} /><span>Summarize community activity</span></div><div className="capability"><Icon name="grid" size={16} /><span>Navigate your workspace</span></div></div><div className="safety-note"><Icon name="shield" size={17} /><p><strong>Care comes first.</strong><br />This assistant does not diagnose, prescribe, or replace clinical judgment.</p></div></aside></div></>}
+          {active === 'AI Assistant' && <><div className="welcome-row"><div><div className="eyebrow">WORKSPACE SUPPORT</div><h1>Workspace helper</h1><p className="page-subtitle">Navigation support only; this screen does not use an AI service.</p></div></div><div className="assistant-layout"><section className="panel chat-panel"><div className="chat-header"><span className="assistant-avatar"><Icon name="sparkles" size={20} /></span><div><strong>CareCircle workspace helper</strong><small>Navigation support</small></div></div><div className="chat-messages">{messages.map((message, index) => <div className={`chat-message message-${message.from}`} key={`${message.from}-${index}`}><p>{message.text}</p></div>)}</div><div className="suggestions"><span>Try asking</span>{['Open patients', 'Open inventory'].map((suggestion) => <button type="button" key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>)}</div><form className="chat-form" onSubmit={sendMessage}><input aria-label="Message the workspace helper" placeholder="Ask where to find a workspace..." value={chatInput} onChange={(event) => setChatInput(event.target.value)} /><button aria-label="Send message" type="submit"><Icon name="arrowUp" size={17} /></button></form></section></div></>}
 
-          {activeModule && <><div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div><button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name={active === 'Reports' ? 'chart' : active === 'QR ID' ? 'qr' : 'plus'} size={17} />{active === 'Reports' ? 'Generate report' : active === 'QR ID' ? 'Issue an ID' : active === 'Users' ? 'Invite a user' : active === 'Alerts' ? 'Manage alerts' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'stock item' : active === 'Referrals' ? 'a referral' : 'record'}`}</button></div><div className="module-stats">{activeModule.stats.map(([label, value, note]) => <div className="module-stat" key={label}><span>{label}</span><strong>{value}</strong><small>{note}</small></div>)}</div>{active === 'QR ID' && <div className="qr-info-banner"><span className="qr-banner-icon"><Icon name="qr" size={20} /></span><p><strong>Community health IDs</strong><br />Search for a patient below to view their ID record. QR codes are a prototype preview and are not scannable.</p></div>}<ModuleTable module={activeModule} query={query} />{active === 'Reports' && <div className="report-footnote">Reports in this workspace use sample data. Confirm figures in your official reporting system before sharing.</div>}</>}
+          {activeModule && <><div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div>{activeModule.fields && <button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name="plus" size={17} />{active === 'Reports' ? 'Request report' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'an item' : active === 'Referrals' ? 'a referral' : active === 'Alerts' ? 'an alert' : 'record'}`}</button>}</div><div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{activeRows.length.toLocaleString()}</strong><small>In this organization</small></div></div>{!activeModule.fields && <div className="form-note">{active === 'Users' ? 'Invite and manage accounts from Supabase Authentication. This screen shows organization memberships only.' : 'QR IDs are read-only here; create tokens through a secured server-side workflow.'}</div>}<ModuleTable module={activeModule} rows={activeRows} query={query} /></>}
         </div>
       </main>
 
       {mobileNav && <button className="mobile-scrim" type="button" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
-      {patientModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPatientModal(false) }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="patient-modal-title"><div className="modal-heading"><div><div className="eyebrow">PATIENT DIRECTORY</div><h2 id="patient-modal-title">Add a patient</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setPatientModal(false)}><Icon name="close" /></button></div><p className="modal-description">Create a new patient record for your community.</p><form className="patient-form" onSubmit={submitPatient}><label>Full name<input autoFocus required placeholder="e.g. Amina Yusuf" value={newPatient.name} onChange={(event) => setNewPatient({ ...newPatient, name: event.target.value })} /></label><label>Community<select value={newPatient.community} onChange={(event) => setNewPatient({ ...newPatient, community: event.target.value })}><option>Northside</option><option>Riverside</option><option>East Ward</option><option>Hillview</option></select></label><label>Care program<select value={newPatient.program} onChange={(event) => setNewPatient({ ...newPatient, program: event.target.value })}><option>General care</option><option>Maternal care</option><option>Child wellness</option><option>Hypertension</option><option>Diabetes care</option></select></label>            <div className="form-note"><Icon name="shield" size={15} /> Demo only. Do not enter real patient or health information.</div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setPatientModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={isSavingPatient || databaseStatus === 'connecting' || databaseStatus === 'error' || databaseStatus === 'configuration-error'}><Icon name="plus" size={16} />{isSavingPatient ? 'Saving…' : databaseStatus === 'connecting' ? 'Connecting…' : 'Create patient'}</button></div></form></section></div>}
+      {patientModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPatientModal(false) }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="patient-modal-title"><div className="modal-heading"><div><div className="eyebrow">PATIENT DIRECTORY</div><h2 id="patient-modal-title">Add a patient</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setPatientModal(false)}><Icon name="close" /></button></div><p className="modal-description">Create a patient record in this organization.</p><form className="patient-form" onSubmit={submitPatient}><label>Full name<input autoFocus required name="full_name" maxLength={120} placeholder="Enter full name" /></label><label>Date of birth<input name="birth_date" type="date" /></label><label>Sex<select name="sex" defaultValue=""><option value="">Not recorded</option><option value="female">Female</option><option value="male">Male</option><option value="intersex">Intersex</option><option value="unknown">Unknown</option><option value="not_recorded">Not recorded</option></select></label><label>Community<select name="community_id" defaultValue=""><option value="">No community</option>{communities.map((community) => <option key={community.id} value={community.id}>{community.name}</option>)}</select></label><label>Care program<input name="care_program" maxLength={120} defaultValue="General care" /></label>{recordError && <p className="auth-error" role="alert">{recordError}</p>}<div className="form-note"><Icon name="shield" size={15} />Patient records are stored in your organization’s Supabase database.</div><div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setPatientModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={isSavingRecord || databaseStatus !== 'connected'}><Icon name="plus" size={16} />{isSavingRecord ? 'Saving…' : 'Create patient'}</button></div></form></section></div>}
+      {recordModal && activeModule?.fields && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRecordModal(false) }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="record-modal-title"><div className="modal-heading"><div><div className="eyebrow">{activeModule.eyebrow}</div><h2 id="record-modal-title">Add {active.toLowerCase()} record</h2></div><button className="icon-button" type="button" aria-label="Close dialog" onClick={() => setRecordModal(false)}><Icon name="close" /></button></div><p className="modal-description">This record will be saved to the selected organization.</p><form className="patient-form" onSubmit={submitWorkspaceRecord}>{activeModule.fields.map((field) => { const options = field.source === 'communities' ? communities.map((item) => ({ id: item.id, label: item.name })) : field.source === 'patients' ? patientOptions.map((item) => ({ id: item.id, label: item.full_name })) : facilities.map((item) => ({ id: item.id, label: item.name })); return <label key={field.name}>{field.label}{field.type === 'select' ? <select name={field.name} required={field.required} defaultValue=""><option value="">Select {field.label.toLowerCase()}</option>{(field.options ?? options.map((item) => item.label)).map((item, index) => <option key={field.options ? item : options[index].id} value={field.options ? item : options[index].id}>{item}</option>)}</select> : field.type === 'textarea' ? <textarea name={field.name} required={field.required} rows="3" /> : <input name={field.name} type={field.type ?? 'text'} required={field.required} min={field.type === 'number' ? 0 : undefined} />}</label> })}{recordError && <p className="auth-error" role="alert">{recordError}</p>}{active === 'Reports' && <p className="form-note">Report requests are recorded in Supabase; file generation is not configured.</p>}<div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setRecordModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={isSavingRecord || databaseStatus !== 'connected'}>{isSavingRecord ? 'Saving…' : 'Save record'}</button></div></form></section></div>}
       {toast && <div className="toast-message"><span>✓</span>{toast}</div>}
     </div>
   )
 }
 
-function PatientTable({ patients: rows, query, onSelect }) {
-  return <section className="panel data-panel"><div className="table-toolbar"><div><h2>All patients <span className="row-count">{rows.length}</span></h2><p>Patient records across your communities</p></div><div className="table-tools"><button type="button" className="filter-button"><Icon name="calendar" size={15} /> All programs <Icon name="chevron" size={13} /></button><button type="button" className="filter-button"><Icon name="grid" size={15} /> Filter <span className="filter-count">2</span></button></div></div><div className="table-scroll"><table><thead><tr><th>Patient</th><th>Patient ID</th><th>Age / sex</th><th>Community</th><th>Care program</th><th>Status</th><th /></tr></thead><tbody>{rows.map((patient) => <tr key={patient.id} onClick={() => onSelect(patient)}><td><div className="patient-cell"><Avatar initials={patient.initials} color={patient.color} small /><strong>{patient.name}</strong></div></td><td className="muted-cell">{patient.id}</td><td className="muted-cell">{patient.age}{patient.sex !== '—' ? ` · ${patient.sex}` : ''}</td><td>{patient.community}</td><td>{patient.program}</td><td><StatusPill>{patient.status}</StatusPill></td><td><button className="row-action" type="button" aria-label={`View ${patient.name}`} onClick={(event) => { event.stopPropagation(); onSelect(patient) }}><Icon name="chevron" size={16} /></button></td></tr>)}</tbody></table>{rows.length === 0 && <div className="empty-state">{query ? `No patients match “${query}”.` : 'No patient records yet.'}</div>}</div><div className="table-footer">Showing <strong>{rows.length ? 1 : 0}–{rows.length}</strong> of <strong>{rows.length}</strong> patients<span>Page 1 of 1</span></div></section>
+function formatCell(value) {
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) return new Date(value).toLocaleString()
+  return typeof value === 'string' ? value.replaceAll('_', ' ') : String(value)
 }
 
-function ModuleTable({ module, query }) {
-  const filteredRows = module.rows.filter((row) => row.some((cell) => String(cell).toLowerCase().includes(query.toLowerCase())))
-  const finalColumnIsStatus = /status|priority|access|format/i.test(module.columns[module.columns.length - 1])
-  return <section className="panel data-panel"><div className="table-toolbar"><div><h2>{module.eyebrow === 'INSIGHTS & REPORTS' ? 'Available reports' : module.eyebrow === 'ATTENTION NEEDED' ? 'Recent alerts' : module.eyebrow === 'TEAM ACCESS' ? 'Team directory' : `All ${module.eyebrow === 'SUPPLY MANAGEMENT' ? 'stock items' : module.eyebrow === 'IMMUNIZATION' ? 'upcoming vaccinations' : module.eyebrow === 'CARE COORDINATION' ? 'referrals' : module.eyebrow === 'PATIENT IDENTIFICATION' ? 'patient IDs' : 'families'}`} <span className="row-count">{filteredRows.length}</span></h2><p>Records across your community workspace</p></div><div className="table-tools"><button type="button" className="filter-button"><Icon name="calendar" size={15} /> This month <Icon name="chevron" size={13} /></button><button type="button" className="filter-button"><Icon name="grid" size={15} /> Filter</button></div></div><div className="table-scroll"><table><thead><tr>{module.columns.map((column) => <th key={column}>{column}</th>)}<th /></tr></thead><tbody>{filteredRows.map((row, index) => <tr key={`${row[0]}-${index}`}>{row.map((cell, cellIndex) => <td key={`${cell}-${cellIndex}`}>{cellIndex === row.length - 1 && finalColumnIsStatus ? <StatusPill>{cell}</StatusPill> : cellIndex === 0 ? <strong className="table-primary-text">{cell}</strong> : <span className="muted-cell">{cell}</span>}</td>)}<td><button className="row-action" type="button" aria-label={`View ${row[0]}`}><Icon name="chevron" size={16} /></button></td></tr>)}</tbody></table>{filteredRows.length === 0 && <div className="empty-state">No records match “{query}”.</div>}</div><div className="table-footer">Showing <strong>{filteredRows.length ? 1 : 0}–{filteredRows.length}</strong> of <strong>{filteredRows.length}</strong> records<span>Page 1 of 1</span></div></section>
+function PatientTable({ patients: rows, query, onSelect }) {
+  return <section className="panel data-panel"><div className="table-toolbar"><div><h2>Patients <span className="row-count">{rows.length}</span></h2><p>Patient records from this organization</p></div></div><div className="table-scroll"><table><thead><tr><th>Patient</th><th>Patient ID</th><th>Age / sex</th><th>Community</th><th>Care program</th><th>Status</th></tr></thead><tbody>{rows.map((patient) => <tr key={patient.id} onClick={() => onSelect(patient)}><td><div className="patient-cell"><Avatar initials={patient.initials} color={patient.color} small /><strong>{patient.name}</strong></div></td><td className="muted-cell">{patient.id}</td><td className="muted-cell">{patient.age}{patient.sex !== '—' ? ` · ${patient.sex}` : ''}</td><td>{patient.community}</td><td>{patient.program}</td><td><StatusPill>{patient.status}</StatusPill></td></tr>)}</tbody></table>{rows.length === 0 && <div className="empty-state">{query ? `No patients match “${query}”.` : 'No patient records yet. Add your first patient to get started.'}</div>}</div><div className="table-footer">Showing <strong>{rows.length}</strong> of <strong>{rows.length}</strong> patients</div></section>
+}
+
+function ModuleTable({ module, rows, query }) {
+  const filteredRows = rows.filter((record) => module.map(record).some((cell) => formatCell(cell).toLowerCase().includes(query.toLowerCase())))
+  return <section className="panel data-panel"><div className="table-toolbar"><div><h2>{activeTitle(module)} <span className="row-count">{filteredRows.length}</span></h2><p>Records from this organization</p></div></div><div className="table-scroll"><table><thead><tr>{module.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{filteredRows.map((record, index) => <tr key={record.id ?? record.user_id ?? index}>{module.map(record).map((cell, cellIndex) => <td key={module.columns[cellIndex]}>{/status|priority/i.test(module.columns[cellIndex]) && cell ? <StatusPill>{formatCell(cell)}</StatusPill> : cellIndex === 0 ? <strong className="table-primary-text">{formatCell(cell)}</strong> : <span className="muted-cell">{formatCell(cell)}</span>}</td>)}</tr>)}</tbody></table>{filteredRows.length === 0 && <div className="empty-state">{query ? `No records match “${query}”.` : `No ${activeTitle(module).toLowerCase()} yet.`}</div>}</div><div className="table-footer">Showing <strong>{filteredRows.length}</strong> of <strong>{rows.length}</strong> records</div></section>
+}
+
+function activeTitle(module) {
+  if (module.eyebrow === 'TEAM ACCESS') return 'Team members'
+  if (module.eyebrow === 'PATIENT IDENTIFICATION') return 'Issued IDs'
+  return module.eyebrow === 'COMMUNITY CARE' ? 'Families' : module.eyebrow === 'IMMUNIZATION' ? 'Vaccination records' : module.eyebrow === 'SUPPLY MANAGEMENT' ? 'Inventory items' : module.eyebrow === 'CARE COORDINATION' ? 'Referrals' : module.eyebrow === 'INSIGHTS & REPORTS' ? 'Report requests' : 'Alerts'
 }
 
 export default App
