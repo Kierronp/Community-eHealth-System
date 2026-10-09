@@ -102,21 +102,21 @@ Deno.serve(async (request: Request) => {
         return response(500, { error: 'Could not register your account. Please contact the clinic if this continues.' })
       }
       if (typeof memberNumber !== 'string' || !memberNumber) {
-        console.error('Public client registration returned no member ID.')
-        return response(500, { error: 'Your application was saved, but we could not retrieve your member ID. Please contact the clinic.' })
+        console.error('Public client registration returned no application confirmation.')
+        return response(500, { error: 'Your application was saved, but we could not confirm it. Please contact the clinic.' })
       }
-      return response(200, { registered: true, pending: true, member_number: memberNumber })
+      return response(200, { registered: true, pending: true })
     }
 
     if (action !== 'join') {
       return response(400, { error: 'Choose a valid client portal action.' })
     }
-    if (!validString(body.member_number, 3, 32) || typeof body.pin !== 'string' || !/^[0-9]{4}$/.test(body.pin)) {
-      return response(400, { error: 'Enter your member ID and four-digit PIN.' })
+    if (!validString(body.full_name, 2, 120) || typeof body.pin !== 'string' || !/^[0-9]{4}$/.test(body.pin)) {
+      return response(400, { error: 'Enter your registered full name and four-digit PIN.' })
     }
 
-    const normalizedMemberNumber = String(body.member_number).trim().toUpperCase()
-    if (!await rateLimit(supabase, serviceRoleKey, `identity:${body.organization_id}:${normalizedMemberNumber}`, 6, 900)) {
+    const normalizedName = String(body.full_name).trim().toLowerCase()
+    if (!await rateLimit(supabase, serviceRoleKey, `identity:${body.organization_id}:${normalizedName}`, 6, 900)) {
       return response(429, { error: 'Too many attempts for these account details. Please try again later.' })
     }
 
@@ -129,7 +129,7 @@ Deno.serve(async (request: Request) => {
     const { data, error } = await supabase.rpc('join_public_service', {
       p_organization_id: body.organization_id,
       p_campaign_id: body.campaign_id,
-      p_member_number: normalizedMemberNumber,
+      p_full_name: String(body.full_name).trim(),
       p_pin: body.pin,
     })
     if (error || !data?.[0]?.join_id || data[0].assigned_queue_number == null) {

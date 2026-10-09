@@ -659,16 +659,16 @@ declare
   matching_client_count integer;
 begin
   if coalesce(p_pin, '') !~ '^[0-9]{4}$' then
-    raise exception 'We could not verify those details. Check your clinic, member ID, and PIN.' using errcode = '22023';
+    raise exception 'We could not verify those details. Check your clinic, registered full name, and PIN.' using errcode = '22023';
   end if;
   select count(*), min(cp.id::text)::uuid into matching_client_count, matching_client_id
   from public.client_profiles cp
   where cp.organization_id = p_organization_id
     and cp.status = 'active'
-    and upper(trim(cp.member_number)) = upper(trim(coalesce(p_full_name, '')))
+    and lower(trim(cp.full_name)) = lower(trim(coalesce(p_full_name, '')))
     and cp.pin_hash = extensions.crypt(p_pin, cp.pin_hash);
   if matching_client_count <> 1 then
-    raise exception 'We could not verify those details. Check your clinic, member ID, and PIN.' using errcode = '22023';
+    raise exception 'We could not verify those details. Check your clinic, registered full name, and PIN.' using errcode = '22023';
   end if;
   return matching_client_id;
 end;
@@ -902,7 +902,7 @@ drop function if exists public.join_public_service(uuid, uuid, text, text);
 create function public.join_public_service(
   p_organization_id uuid,
   p_campaign_id uuid,
-  p_member_number text,
+  p_full_name text,
   p_pin text
 )
 returns table (join_id uuid, already_joined boolean, assigned_queue_number integer)
@@ -918,9 +918,9 @@ declare
   already_on_list boolean := false;
   allocated_number integer;
 begin
-  if char_length(trim(coalesce(p_member_number, ''))) not between 3 and 32
+  if char_length(trim(coalesce(p_full_name, ''))) not between 2 and 120
     or coalesce(p_pin, '') !~ '^[0-9]{4}$' then
-    raise exception 'Enter your member ID and four-digit PIN.' using errcode = '22023';
+    raise exception 'Enter your registered full name and four-digit PIN.' using errcode = '22023';
   end if;
   perform 1 from public.service_campaigns c
     where c.id = p_campaign_id and c.organization_id = p_organization_id
@@ -931,7 +931,7 @@ begin
     raise exception 'This service is no longer accepting sign-ups.' using errcode = '22023';
   end if;
   perform pg_advisory_xact_lock(hashtextextended(
-    p_organization_id::text || ':' || upper(trim(p_member_number)),
+    p_organization_id::text || ':' || lower(trim(p_full_name)),
     0
   ));
   select count(*), count(*) filter (
@@ -941,19 +941,19 @@ begin
   from public.client_profiles cp
   where cp.organization_id = p_organization_id
     and cp.status = 'active'
-    and upper(trim(cp.member_number)) = upper(trim(p_member_number));
+    and lower(trim(cp.full_name)) = lower(trim(p_full_name));
   if same_name_count = 0 then
-    raise exception 'No approved member account was found with that ID. Check your member ID or ask the clinic to review your application.' using errcode = '22023';
+    raise exception 'No approved member account was found with that name. Check your registered full name or ask the clinic to review your application.' using errcode = '22023';
   elsif matching_count = 1 then
     select cp.id into client_id
     from public.client_profiles cp
     where cp.organization_id = p_organization_id
       and cp.status = 'active'
-      and upper(trim(cp.member_number)) = upper(trim(p_member_number))
+      and lower(trim(cp.full_name)) = lower(trim(p_full_name))
       and cp.pin_hash = extensions.crypt(p_pin, cp.pin_hash)
     limit 1;
   else
-    raise exception 'We could not verify those details. Check your clinic, member ID, and PIN.' using errcode = '22023';
+    raise exception 'We could not verify those details. Check your clinic, registered full name, and PIN.' using errcode = '22023';
   end if;
   select csr.id into service_join_id
   from public.client_service_requests csr
