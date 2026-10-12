@@ -5,6 +5,8 @@ import './App.css'
 
 const ServicesWorkspace = lazy(() => import('./ServicesWorkspace.jsx'))
 const MembersWorkspace = lazy(() => import('./MembersWorkspace.jsx'))
+const AccessRequestForm = lazy(() => import('./AccessRequests.jsx').then((module) => ({ default: module.AccessRequestForm })))
+const AccessRequestsPanel = lazy(() => import('./AccessRequests.jsx').then((module) => ({ default: module.AccessRequestsPanel })))
 
 const navigation = [
   { label: 'Dashboard', icon: 'grid' },
@@ -159,7 +161,7 @@ function AuthFrame({ children }) {
       <section className="auth-card">
         <a className="brand auth-brand" href="#" onClick={(event) => event.preventDefault()}>
           <span className="brand-mark"><Icon name="shield" size={21} /></span>
-          <span className="brand-copy"><strong>care<span>circle</span></strong><small>COMMUNITY HEALTH</small></span>
+          <span className="brand-copy"><strong>Community eHealth</strong><small>COMMUNITY HEALTH</small></span>
         </a>
         {children}
       </section>
@@ -564,6 +566,13 @@ function App() {
     }
   }
 
+  function acceptOrganizationAccess(rows) {
+    setOrganizations(rows)
+    setOrganizationId(rows[0].organization_id)
+    setAccountType('staff')
+    setDatabaseStatus('connecting')
+  }
+
   if (!supabaseConfigured) {
     return <ClientPortal />
   }
@@ -597,7 +606,8 @@ function App() {
     return <AuthFrame>
       <div className="eyebrow">STAFF ACCESS</div>
       <h1>No organization access</h1>
-      <p className="auth-description">Ask your organization head to create or invite your staff account and assign the correct organization role in Supabase.</p>
+      <p className="auth-description">Your account is signed in, but it has not been assigned to a clinic yet. Request access below; an organization owner or administrator must approve it.</p>
+      <Suspense fallback={<p className="auth-description">Loading access requests…</p>}><AccessRequestForm onAccessGranted={acceptOrganizationAccess} /></Suspense>
       <button className="auth-link" type="button" onClick={signOut}>Sign out</button>
     </AuthFrame>
   }
@@ -689,9 +699,9 @@ function App() {
 
           {active === 'Patients' && <><div className="welcome-row"><div><div className="eyebrow">PATIENT DIRECTORY</div><h1>Patients</h1><p className="page-subtitle">Manage and follow up with people in your community.</p></div>{canManageActiveModule && <button className="primary-button" type="button" onClick={openRecordModal}><Icon name="plus" size={17} /> Add a patient</button>}</div><div className="module-stats"><div className="module-stat"><span>Total patients</span><strong>{patientList.length.toLocaleString()}</strong><small>In this organization</small></div></div>{recordError && <p className="auth-error" role="alert">{recordError}</p>}<PatientTable patients={matchingPatients} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editPatient} onDelete={deletePatient} /></>}
 
-          {active === 'AI Assistant' && <><div className="welcome-row"><div><div className="eyebrow">WORKSPACE SUPPORT</div><h1>Workspace helper</h1><p className="page-subtitle">Navigation support only; this screen does not use an AI service.</p></div></div><div className="assistant-layout"><section className="panel chat-panel"><div className="chat-header"><span className="assistant-avatar"><Icon name="sparkles" size={20} /></span><div><strong>CareCircle workspace helper</strong><small>Navigation support</small></div></div><div className="chat-messages">{messages.map((message, index) => <div className={`chat-message message-${message.from}`} key={`${message.from}-${index}`}><p>{message.text}</p></div>)}</div><div className="suggestions"><span>Try asking</span>{['Open members', 'Open inventory'].map((suggestion) => <button type="button" key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>)}</div><form className="chat-form" onSubmit={sendMessage}><input aria-label="Message the workspace helper" placeholder="Ask where to find a workspace..." value={chatInput} onChange={(event) => setChatInput(event.target.value)} /><button aria-label="Send message" type="submit"><Icon name="arrowUp" size={17} /></button></form></section></div></>}
+          {active === 'AI Assistant' && <><div className="welcome-row"><div><div className="eyebrow">WORKSPACE SUPPORT</div><h1>Workspace helper</h1><p className="page-subtitle">Navigation support only; this screen does not use an AI service.</p></div></div><div className="assistant-layout"><section className="panel chat-panel"><div className="chat-header"><span className="assistant-avatar"><Icon name="sparkles" size={20} /></span><div><strong>Community eHealth workspace helper</strong><small>Navigation support</small></div></div><div className="chat-messages">{messages.map((message, index) => <div className={`chat-message message-${message.from}`} key={`${message.from}-${index}`}><p>{message.text}</p></div>)}</div><div className="suggestions"><span>Try asking</span>{['Open members', 'Open inventory'].map((suggestion) => <button type="button" key={suggestion} onClick={() => setChatInput(suggestion)}>{suggestion}</button>)}</div><form className="chat-form" onSubmit={sendMessage}><input aria-label="Message the workspace helper" placeholder="Ask where to find a workspace..." value={chatInput} onChange={(event) => setChatInput(event.target.value)} /><button aria-label="Send message" type="submit"><Icon name="arrowUp" size={17} /></button></form></section></div></>}
 
-          {activeModule && <><div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div>{activeModule.fields && canManageActiveModule && <button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name="plus" size={17} />{active === 'Reports' ? 'Request report' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'an item' : active === 'Alerts' ? 'an alert' : 'record'}`}</button>}</div><div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{activeRows.length.toLocaleString()}</strong><small>In this organization</small></div></div>{!activeModule.fields && <div className="form-note">Invite and manage accounts from Supabase Authentication. This screen shows organization memberships only.</div>}{recordError && <p className="auth-error" role="alert">{recordError}</p>}<ModuleTable module={activeModule} rows={activeRows} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editRecord} onDelete={deleteRecord} /></>}
+          {activeModule && <>{active === 'Users' && <Suspense fallback={<p className="page-subtitle">Loading access requests…</p>}><AccessRequestsPanel organizationId={organizationId} memberRole={memberRole} /></Suspense>}<div className="welcome-row"><div><div className="eyebrow">{activeModule.eyebrow}</div><h1>{active}</h1><p className="page-subtitle">{activeModule.description}</p></div>{activeModule.fields && canManageActiveModule && <button className="primary-button" type="button" onClick={handlePrimaryAction}><Icon name="plus" size={17} />{active === 'Reports' ? 'Request report' : `Add ${active === 'Families' ? 'a family' : active === 'Inventory' ? 'an item' : active === 'Alerts' ? 'an alert' : 'record'}`}</button>}</div><div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{activeRows.length.toLocaleString()}</strong><small>In this organization</small></div></div>{!activeModule.fields && <div className="form-note">Invite and manage accounts from Supabase Authentication. This screen shows organization memberships only.</div>}{recordError && <p className="auth-error" role="alert">{recordError}</p>}<ModuleTable module={activeModule} rows={activeRows} query={query} canManage={canManageActiveModule} canDelete={canDeleteActiveModule} onEdit={editRecord} onDelete={deleteRecord} /></>}
         </div>
       </main>
 

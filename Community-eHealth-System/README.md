@@ -1,13 +1,13 @@
-# CareCircle Community Health
+# Community eHealth
 
-CareCircle is a React/Vite community-health application using Supabase PostgreSQL. It provides a public client portal and a separate staff workspace, with organization-scoped data protected by row-level security.
+Community eHealth is a React/Vite community-health application using Supabase PostgreSQL. It provides a public client portal and a separate staff workspace, with organization-scoped data protected by row-level security.
 
 ## Connect Supabase
 
 1. Back up any existing data in your Supabase project before applying the schema. The migration disables public access to the old `demo_patients` table if it exists; it does not delete existing records.
 2. Open the Supabase project **SQL Editor**, review and run [`supabase/schema.sql`](./supabase/schema.sql). Re-run it after updates to add the staff member-management functions. It creates the client profiles, public service sign-ups, service campaigns, clinic queue, row-level security policies, and database functions. It does not create sample client or patient records. The PIN functions expect `pgcrypto` functions in Supabase's `extensions` schema.
 3. The public client dashboard does not require client sign-in or email-link authentication. Staff continue to sign in with email and password through **Admin login**.
-4. Create staff accounts yourself in **Authentication → Users**. Staff sign in with email and password only; no staff registration is available in the app. Assign staff to an organization and set their role in `organization_memberships`. Do not give organization membership to client accounts.
+4. Create staff accounts yourself in **Authentication → Users**. Staff sign in with email and password only; no staff registration is available in the app. A signed-in staff user without organization membership can submit an access request from the **No organization access** screen. Organization owners/admins review requests in **Users** and approve a staff role; only owners can grant the admin role through this request workflow. Alternatively, assign staff directly in `organization_memberships`. Do not give organization membership to client accounts.
 5. Copy `.env.example` to `.env.local` and fill in the project URL and **publishable/anon** key from Supabase project settings:
 
    ```env
@@ -31,7 +31,7 @@ Staff with an owner, admin, or clinician role can publish open services in **Ser
 Campaign email is optional and only sent to clients who explicitly checked the email-notifications option during registration. Since public registration does not verify email ownership, notices must contain only general service information and no sensitive health information. Email is sent by the Supabase Edge Function, not by browser code:
 
 ```powershell
-supabase secrets set RESEND_API_KEY=your-resend-api-key RESEND_FROM="CareCircle <notices@your-verified-domain>"
+supabase secrets set RESEND_API_KEY=your-resend-api-key RESEND_FROM="Community eHealth <notices@your-verified-domain>"
 supabase functions deploy notify-campaign
 ```
 
@@ -50,7 +50,7 @@ Supabase configuration is required for registration, sign-in, and live service a
 
 ## Connected workspaces
 
-The staff dashboard and Members, Families, Vaccination, Inventory items, Reports, Alerts, Users, and Services & Queue workspaces load organization-scoped Supabase records. Members lists approved/inactive client profiles and has a separate Pending applications tab. Owners and admins can approve or reject applications, add, edit, or delete members. Rejected applications are retained as inactive records. The unique clinic member ID is for staff reference only and is not required from clients; clients join with their registered name and PIN. Member PINs are hashed server-side and never displayed. Deleting a member permanently removes their service sign-ups and queue history. Other workspace deletions are limited to owners/admins and blocked by database relationships when a record is still referenced. Staff accounts without active organization access are not allowed to create an organization from the app; ask the organization head to assign access.
+The staff dashboard and Members, Families, Vaccination, Inventory items, Reports, Alerts, Users, and Services & Queue workspaces load organization-scoped Supabase records. The Users workspace includes owner/admin review of pending staff access requests. Members lists approved/inactive client profiles and has a separate Pending applications tab. Owners and admins can approve or reject applications, add, edit, or delete members. Rejected applications are retained as inactive records. The unique clinic member ID is for staff reference only and is not required from clients; clients join with their registered name and PIN. Member PINs are hashed server-side and never displayed. Deleting a member permanently removes their service sign-ups and queue history. Other workspace deletions are limited to owners/admins and blocked by database relationships when a record is still referenced.
 
 The app does not delete or import records from your Supabase project. The migration disables public access to the legacy `demo_patients` table if it exists; it does not delete that table or its rows.
 

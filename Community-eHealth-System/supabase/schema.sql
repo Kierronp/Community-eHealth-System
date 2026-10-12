@@ -51,6 +51,18 @@ create table if not exists public.organization_memberships (
   primary key (organization_id, user_id)
 );
 
+create table if not exists public.organization_access_requests (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  requested_role text not null check (requested_role in ('admin', 'clinician', 'health_worker', 'inventory_manager', 'viewer')),
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  requested_at timestamptz not null default now(),
+  reviewed_at timestamptz,
+  reviewed_by uuid references auth.users(id),
+  unique (organization_id, user_id)
+);
+
 create table if not exists public.facilities (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations(id) on delete cascade,
@@ -592,6 +604,147 @@ as $$
   join public.organizations o on o.id = m.organization_id
   where m.user_id = (select auth.uid()) and m.status = 'active'
   order by o.name;
+$$;
+
+create or replace function public.request_organization_access(
+  p_organization_id uuid,
+  p_requested_role text
+)
+returns table (request_status text, requested_role text)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Sign in before requesting organization access.' using errcode = '42501';
+  end if;
+  if coalesce(p_requested_role, '') not in ('admin', 'clinician', 'health_worker', 'inventory_manager', 'viewer') then
+    raise exception 'Choose a valid staff role. Owner access must be assigned directly by an organization owner.' using errcode = '22023';
+  end if;
+  if not exists (select 1 from public.organizations o where o.id = p_organization_id) then
+    raise exception 'Choose a valid organization.' using errcode = '22023';
+  end if;
+  if exists (
+    select 1 from public.organization_memberships m
+    where m.organization_id = p_organization_id
+      and m.user_id = auth.uid()
+      and m.status = 'active'
+  ) then
+    raise exception 'You already have active access to this organization.' using errcode = '23505';
+  end if;
+  insert into public.organization_access_requests (organization_id, user_id, requested_role)
+  values (p_organization_id, auth.uid(), p_requested_role)
+  on conflict (organization_id, user_id) do update
+  set requested_role = excluded.requested_role,
+      status = 'pending',
+      requested_at = now(),
+      reviewed_at = null,
+      reviewed_by = null;
+
+  return query
+  select ar.status, ar.requested_role
+  from public.organization_access_requests ar
+  where ar.organization_id = p_organization_id and ar.user_id = auth.uid();
+end;
+$$;
+
+create or replace function public.my_organization_access_requests()
+returns table (
+  organization_id uuid,
+  organization_name text,
+  requested_role text,
+  request_status text,
+  requested_at timestamptz
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select ar.organization_id, o.name, ar.requested_role, ar.status, ar.requested_at
+  from public.organization_access_requests ar
+  join public.organizations o on o.id = ar.organization_id
+  where ar.user_id = (select auth.uid())
+  order by ar.requested_at desc;
+$$;
+
+create or replace function public.pending_organization_access_requests(p_organization_id uuid)
+returns table (
+  request_id uuid,
+  user_id uuid,
+  user_email text,
+  display_name text,
+  requested_role text,
+  requested_at timestamptz
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if not public.has_org_role(p_organization_id, array['owner', 'admin']) then
+    raise exception 'You do not have permission to review organization access requests.' using errcode = '42501';
+  end if;
+  return query
+  select ar.id, ar.user_id, u.email::text,
+    coalesce(nullif(u.raw_user_meta_data ->> 'full_name', ''), u.email)::text,
+    ar.requested_role, ar.requested_at
+  from public.organization_access_requests ar
+  join auth.users u on u.id = ar.user_id
+  where ar.organization_id = p_organization_id and ar.status = 'pending'
+  order by ar.requested_at;
+end;
+$$;
+
+create or replace function public.review_organization_access_request(
+  p_request_id uuid,
+  p_decision text,
+  p_role text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target_request public.organization_access_requests%rowtype;
+begin
+  select * into target_request
+  from public.organization_access_requests ar
+  where ar.id = p_request_id and ar.status = 'pending'
+  for update;
+  if not found then
+    raise exception 'Pending access request was not found or has already been reviewed.' using errcode = 'P0002';
+  end if;
+  if not public.has_org_role(target_request.organization_id, array['owner', 'admin']) then
+    raise exception 'You do not have permission to review organization access requests.' using errcode = '42501';
+  end if;
+  if coalesce(p_decision, '') not in ('approve', 'reject') then
+    raise exception 'Choose whether to approve or reject this request.' using errcode = '22023';
+  end if;
+  if p_decision = 'approve' then
+    if coalesce(p_role, '') not in ('admin', 'clinician', 'health_worker', 'inventory_manager', 'viewer') then
+      raise exception 'Choose a valid staff role. Owner access must be assigned directly by an organization owner.' using errcode = '22023';
+    end if;
+    if p_role = 'admin'
+      and not public.has_org_role(target_request.organization_id, array['owner']) then
+      raise exception 'Only an organization owner can assign the administrator role.' using errcode = '42501';
+    end if;
+    insert into public.organization_memberships (organization_id, user_id, role, status)
+    values (target_request.organization_id, target_request.user_id, p_role, 'active')
+    on conflict (organization_id, user_id) do update
+    set role = excluded.role, status = 'active';
+    update public.organization_access_requests ar
+    set status = 'approved', reviewed_at = now(), reviewed_by = auth.uid()
+    where ar.id = target_request.id;
+  else
+    update public.organization_access_requests ar
+    set status = 'rejected', reviewed_at = now(), reviewed_by = auth.uid()
+    where ar.id = target_request.id;
+  end if;
+end;
 $$;
 
 create or replace function public.list_public_organizations()
@@ -1200,6 +1353,10 @@ drop function if exists public.set_public_client_email_notifications(uuid, text,
 revoke all on function public.is_org_member(uuid) from public, anon;
 revoke all on function public.has_org_role(uuid, text[]) from public, anon;
 revoke all on function public.my_organizations() from public, anon;
+revoke all on function public.request_organization_access(uuid, text) from public, anon;
+revoke all on function public.my_organization_access_requests() from public, anon;
+revoke all on function public.pending_organization_access_requests(uuid) from public, anon;
+revoke all on function public.review_organization_access_request(uuid, text, text) from public, anon;
 revoke all on function public.create_my_organization(text) from public, anon, authenticated;
 revoke all on function public.list_public_organizations() from public;
 revoke all on function public.consume_public_rate_limit(text, integer, integer) from public, anon, authenticated;
@@ -1228,6 +1385,10 @@ grant execute on function public.update_queue_entry_status(uuid, text) to authen
 grant execute on function public.is_org_member(uuid) to authenticated;
 grant execute on function public.has_org_role(uuid, text[]) to authenticated;
 grant execute on function public.my_organizations() to authenticated;
+grant execute on function public.request_organization_access(uuid, text) to authenticated;
+grant execute on function public.my_organization_access_requests() to authenticated;
+grant execute on function public.pending_organization_access_requests(uuid) to authenticated;
+grant execute on function public.review_organization_access_request(uuid, text, text) to authenticated;
 
 revoke all on all tables in schema public from anon, authenticated;
 grant select on public.organizations, public.organization_memberships, public.profiles to authenticated;
@@ -1266,6 +1427,7 @@ grant select on public.audit_logs to authenticated;
 
 alter table public.organizations enable row level security;
 alter table public.organization_memberships enable row level security;
+alter table public.organization_access_requests enable row level security;
 alter table public.profiles enable row level security;
 alter table public.facilities enable row level security;
 alter table public.communities enable row level security;

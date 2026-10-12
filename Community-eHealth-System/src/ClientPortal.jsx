@@ -124,7 +124,7 @@ function PublicClientDashboard({ onStaffLogin }) {
   return <main className="portal-page">
     <header className="portal-header">
       <a className="portal-brand" href="#" onClick={(event) => { event.preventDefault(); navigateTo('dashboard') }}>
-        <span className="brand-mark">+</span><span>CareCircle <small>COMMUNITY HEALTH</small></span>
+        <span className="brand-mark">+</span><span>Community eHealth <small>COMMUNITY HEALTH</small></span>
       </a>
       <button className="portal-text-button" type="button" onClick={() => onStaffLogin ? setSection('staff') : undefined}>Admin login</button>
     </header>
@@ -195,7 +195,7 @@ function PublicClientDashboard({ onStaffLogin }) {
         </>}
       </div>
     </div>
-    <footer className="portal-footer">CareCircle · Community health services</footer>
+    <footer className="portal-footer">Community eHealth · Community health services</footer>
   </main>
 }
 
@@ -444,7 +444,7 @@ function AuthenticatedClientPortal({ mode = 'public', profile, onProfileCreated,
   return <main className="portal-page">
     <header className="portal-header">
       <a className="portal-brand" href="#" onClick={(event) => { event.preventDefault(); setSection('home') }}>
-        <span className="brand-mark">+</span><span>CareCircle <small>COMMUNITY HEALTH</small></span>
+        <span className="brand-mark">+</span><span>Community eHealth <small>COMMUNITY HEALTH</small></span>
       </a>
       {clientMode || setupMode
         ? <button className="portal-text-button" type="button" onClick={onSignOut}>Sign out</button>
@@ -467,7 +467,7 @@ function AuthenticatedClientPortal({ mode = 'public', profile, onProfileCreated,
         <section className="portal-welcome client-dashboard-welcome">
           <div className="eyebrow">CLIENT DASHBOARD</div>
           <h1>{clientTab === 'dashboard' ? `Welcome, ${profile?.full_name}` : clientNavigation.find((item) => item.id === clientTab)?.label}</h1>
-          <p>{clientTab === 'dashboard' ? 'Your community health services, clinic requests, and registered details in one place.' : 'Your private CareCircle client account.'}</p>
+          <p>{clientTab === 'dashboard' ? 'Your community health services, clinic requests, and registered details in one place.' : 'Your private Community eHealth client account.'}</p>
         </section>
 
         {clientTab === 'dashboard' && <>
@@ -540,6 +540,6 @@ function AuthenticatedClientPortal({ mode = 'public', profile, onProfileCreated,
         </form>
       </section>}
     </div>}
-    {!clientMode && !setupMode && <footer className="portal-footer">CareCircle · Community health services</footer>}
+    {!clientMode && !setupMode && <footer className="portal-footer">Community eHealth · Community health services</footer>}
   </main>
 }
