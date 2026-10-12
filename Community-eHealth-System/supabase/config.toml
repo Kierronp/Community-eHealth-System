@@ -1,2 +1,5 @@
 [functions.public-client-portal]
 verify_jwt = false
+
+[functions.staff-account-admin]
+verify_jwt = true

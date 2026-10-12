@@ -2504,6 +2504,32 @@ tbody tr:hover {
   margin-bottom: 22px;
 }
 
+.staff-accounts-panel {
+  margin-bottom: 22px;
+}
+
+.staff-accounts-panel .auth-error,
+.staff-accounts-panel .portal-success {
+  margin: 12px 18px;
+}
+
+.staff-account-modal {
+  width: min(100%, 560px);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
+.staff-account-modal .staff-password-note,
+.staff-account-modal .staff-security-note,
+.staff-account-modal .auth-error,
+.staff-account-modal .modal-actions {
+  grid-column: 1 / -1;
+}
+
+.staff-owner-note {
+  margin-bottom: 20px;
+}
+
 .access-requests-panel .auth-error,
 .access-requests-panel .portal-success {
   margin: 12px 18px;
@@ -2700,6 +2726,10 @@ tbody tr:hover {
 }
 
 @media (max-width: 620px) {
+  .staff-accounts-panel .table-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .access-request-form {
     grid-template-columns: minmax(0, 1fr);
   }

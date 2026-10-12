@@ -62,6 +62,11 @@ create table if not exists public.organization_access_requests (
   reviewed_by uuid references auth.users(id),
   unique (organization_id, user_id)
 );
+alter table public.organization_access_requests
+  drop constraint if exists organization_access_requests_reviewed_by_fkey;
+alter table public.organization_access_requests
+  add constraint organization_access_requests_reviewed_by_fkey
+  foreign key (reviewed_by) references auth.users(id) on delete set null;
 
 create table if not exists public.facilities (
   id uuid primary key default gen_random_uuid(),
@@ -470,6 +475,61 @@ create table if not exists public.public_api_rate_limits (
   window_started_at timestamptz not null,
   request_count integer not null check (request_count > 0)
 );
+
+do $$
+declare
+  membership_reference record;
+begin
+  for membership_reference in
+    select
+      constraint_row.conname,
+      relation_row.relname as table_name,
+      organization_column.attname as organization_column,
+      user_column.attname as user_column
+    from pg_constraint constraint_row
+    join pg_class relation_row on relation_row.oid = constraint_row.conrelid
+    join pg_namespace relation_schema on relation_schema.oid = relation_row.relnamespace
+    join pg_attribute organization_column
+      on organization_column.attrelid = relation_row.oid
+      and organization_column.attnum = constraint_row.conkey[1]
+    join pg_attribute user_column
+      on user_column.attrelid = relation_row.oid
+      and user_column.attnum = constraint_row.conkey[2]
+    join pg_attribute referenced_user_column
+      on referenced_user_column.attrelid = constraint_row.confrelid
+      and referenced_user_column.attnum = constraint_row.confkey[2]
+    where constraint_row.contype = 'f'
+      and constraint_row.confrelid = 'public.organization_memberships'::regclass
+      and relation_schema.nspname = 'public'
+      and cardinality(constraint_row.conkey) = 2
+      and referenced_user_column.attname = 'user_id'
+  loop
+    execute format(
+      'alter table public.%I alter column %I drop not null',
+      membership_reference.table_name,
+      membership_reference.user_column
+    );
+    execute format(
+      'alter table public.%I drop constraint %I',
+      membership_reference.table_name,
+      membership_reference.conname
+    );
+    execute format(
+      'alter table public.%I add constraint %I foreign key (%I, %I) references public.organization_memberships (organization_id, user_id) on delete set null (%I)',
+      membership_reference.table_name,
+      membership_reference.conname,
+      membership_reference.organization_column,
+      membership_reference.user_column,
+      membership_reference.user_column
+    );
+  end loop;
+end;
+$$;
+
+alter table public.audit_logs drop constraint if exists audit_logs_actor_id_fkey;
+alter table public.audit_logs
+  add constraint audit_logs_actor_id_fkey foreign key (actor_id)
+  references auth.users(id) on delete set null;
 
 create index if not exists memberships_user_status_idx on public.organization_memberships(user_id, status);
 create index if not exists facilities_org_active_idx on public.facilities(organization_id, is_active);

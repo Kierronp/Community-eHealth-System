@@ -23,6 +23,13 @@ Community eHealth is a React/Vite community-health application using Supabase Po
    ```
 
    The function is configured with JWT verification disabled because client users have no auth session; Supabase's API gateway still requires the project API key. Confirm the project URL, API key, and deployment configuration before making the portal public.
+8. Deploy the staff account administration Edge Function after applying the schema:
+
+   ```powershell
+   supabase functions deploy staff-account-admin --project-ref uuwcgoejxtispnemglxr
+   ```
+
+   It requires a signed-in organization owner and uses the `SUPABASE_SERVICE_ROLE_KEY` only server-side. Configure Supabase Auth email/SMTP delivery and allowed redirect URLs to use email invitations; owners can alternatively set or change a password. Share owner-set passwords securely. Email changes made by an owner are confirmed immediately. Deleting a staff login permanently removes that Supabase account and its memberships across every organization. Historical organization records remain with the deleted user's creator attribution cleared.
 
 ## Services, queue, and email announcements
 
@@ -50,7 +57,7 @@ Supabase configuration is required for registration, sign-in, and live service a
 
 ## Connected workspaces
 
-The staff dashboard and Members, Families, Vaccination, Inventory items, Reports, Alerts, Users, and Services & Queue workspaces load organization-scoped Supabase records. The Users workspace includes owner/admin review of pending staff access requests. Members lists approved/inactive client profiles and has a separate Pending applications tab. Owners and admins can approve or reject applications, add, edit, or delete members. Rejected applications are retained as inactive records. The unique clinic member ID is for staff reference only and is not required from clients; clients join with their registered name and PIN. Member PINs are hashed server-side and never displayed. Deleting a member permanently removes their service sign-ups and queue history. Other workspace deletions are limited to owners/admins and blocked by database relationships when a record is still referenced.
+The staff dashboard and Members, Families, Vaccination, Inventory items, Reports, Alerts, Users, and Services & Queue workspaces load organization-scoped Supabase records. Owners can create staff accounts by email invitation or initial password, edit staff login information and organization roles, suspend access, and permanently delete staff logins. The Users workspace includes owner/admin review of pending staff access requests. Members lists approved/inactive client profiles and has a separate Pending applications tab. Owners and admins can approve or reject client applications, add, edit, or delete members. Rejected applications are retained as inactive records. The unique clinic member ID is for staff reference only and is not required from clients; clients join with their registered name and PIN. Member PINs are hashed server-side and never displayed. Deleting a member permanently removes their service sign-ups and queue history. Other workspace deletions are limited to owners/admins and blocked by database relationships when a record is still referenced.
 
 The app does not delete or import records from your Supabase project. The migration disables public access to the legacy `demo_patients` table if it exists; it does not delete that table or its rows.
 
