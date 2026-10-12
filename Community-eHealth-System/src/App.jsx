@@ -650,7 +650,7 @@ function App() {
       <aside className={`sidebar${mobileNav ? ' sidebar-open' : ''}`}>
         <a className="brand" href="#" onClick={(event) => { event.preventDefault(); navigate('Dashboard') }}>
           <span className="brand-mark"><Icon name="shield" size={21} /></span>
-          <span className="brand-copy"><strong>care<span>circle</span></strong><small>COMMUNITY HEALTH</small></span>
+          <span className="brand-copy"><strong>Community eHealth</strong><small>COMMUNITY HEALTH</small></span>
         </a>
         <div className="workspace-label">WORKSPACE</div>
         <nav className="side-nav" aria-label="Main navigation">
